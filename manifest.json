@@ -1,0 +1,24 @@
+{
+  "name": "Simple Accounting (Offline)",
+  "short_name": "Accounting",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#f1f5f9",
+  "theme_color": "#0ea5e9",
+  "lang": "en-IN",
+  "scope": "./",
+  "icons": [
+    {
+      "src": "https://cdn.jsdelivr.net/gh/tailwindlabs/heroicons@v2.1.5/24/solid/currency-rupee.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "https://cdn.jsdelivr.net/gh/tailwindlabs/heroicons@v2.1.5/24/solid/cash.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+/* Tiny helpers; Tailwind does 95% of styling */
+.card { background: #fff; border: 1px solid #e5e7eb; border-radius: 1rem; padding: 1rem; }
+.label { display:block; font-size:.85rem; color:#6b7280; margin-bottom:.25rem; }
+.input { width:100%; border:1px solid #e5e7eb; border-radius:.75rem; padding:.65rem .9rem; }
+.btn-primary { background:#0284c7; color:#fff; padding:.7rem 1rem; border-radius:.75rem; font-weight:600; }
+.btn-secondary { background:#f3f4f6; padding:.6rem .9rem; border-radius:.75rem; }
+.row-bad { background:#fff1f2; } /* red-ish row for mismatches */
+.small-note { font-size:0.85rem; color:#6b7280; }
+/* For yellow warning */
+#reportDenomMatch.text-yellow-600 {
+  color: #ca8a04;  /* yellow-600 */
+}
+/* Compact denom modal */
+#denomModal .max-w-sm {
+  max-width: 22rem;  /* a bit narrower than default */
+}
+
+#denomModal table th, 
+#denomModal table td {
+  padding: 0.35rem 0.25rem; /* tighter rows */
+}
+
+#denomModal table {
+  font-size: 0.85rem; /* smaller font for compact view */
+}
+
+#denomModal h3 {
+  font-size: 1rem; /* slightly smaller title */
+}
