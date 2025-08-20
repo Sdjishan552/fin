@@ -14,41 +14,101 @@ function rupees(n) {
   return fmtINR.format(Number(n || 0));
 }
 function rupeesForPDF(n) {
-  return "Rs. " + Number(n || 0).toLocaleString("en-IN");
+  const v = Number(n || 0);
+  return 'Rs' + v.toLocaleString('en-IN', { maximumFractionDigits: 0 });
+}
+function parseINR(txt) {
+  return Number(String(txt).replace(/[^\d.-]/g, '')) || 0; // strips everything except digits, dot, minus
 }
 
 function el(id) { return document.getElementById(id); }
-function toast(msg) {
-  el('statusLine').textContent = msg;
-  setTimeout(() => el('statusLine').textContent = 'Offline-first • Data stays on this device', 3000);
+
+function toast(msg, ms = 2000) {
+  const t = document.createElement('div');
+  t.className = 'fixed bottom-4 left-1/2 -translate-x-1/2 bg-black text-white text-sm px-3 py-2 rounded-lg z-[70]';
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), ms);
 }
+
+/* ====== Amount in words ====== */
+function numToWords(n) {
+  n = Math.floor(Number(n || 0));
+  if (n === 0) return 'zero';
+  if (n > 999999999) return n.toString();
+  const a = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
+  const b = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+
+  function inWords(num) {
+    if (num < 20) return a[num];
+    if (num < 100) return b[Math.floor(num / 10)] + (num % 10 ? ' ' + a[num % 10] : '');
+    if (num < 1000) return a[Math.floor(num / 100)] + ' hundred' + (num % 100 ? ' ' + inWords(num % 100) : '');
+    return '';
+  }
+
+  const crore = Math.floor(n / 10000000); n %= 10000000;
+  const lakh = Math.floor(n / 100000); n %= 100000;
+  const thousand = Math.floor(n / 1000); n %= 1000;
+  const hundred = Math.floor(n / 100); n %= 100;
+
+  let str = '';
+  if (crore) str += inWords(crore) + ' crore ';
+  if (lakh) str += inWords(lakh) + ' lakh ';
+  if (thousand) str += inWords(thousand) + ' thousand ';
+  if (hundred) str += a[hundred] + ' hundred ';
+  if (n) str += inWords(n);
+  return str.trim();
+}
+
+/* ====== Install PWA ====== */
+let deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredPrompt = e;
+  el('btnInstall')?.classList.remove('hidden');
+});
+el('btnInstall')?.addEventListener('click', async () => {
+  if (!deferredPrompt) return;
+  deferredPrompt.prompt();
+  await deferredPrompt.userChoice;
+  deferredPrompt = null;
+  el('btnInstall')?.classList.add('hidden');
+});
+
+/* ====== Online status ====== */
+function updateOnline() {
+  const badge = el('onlineBadge');
+  if (!badge) return;
+  if (navigator.onLine) {
+    badge.textContent = 'online';
+    badge.className = 'px-2 py-1 text-xs rounded bg-green-200';
+  } else {
+    badge.textContent = 'offline';
+    badge.className = 'px-2 py-1 text-xs rounded bg-gray-200';
+  }
+}
+window.addEventListener('online', updateOnline);
+window.addEventListener('offline', updateOnline);
 
 /* ====== IndexedDB ====== */
-const DB_NAME = 'acc_pwa_db';
-const DB_VER = 3;
 let db;
-
 function openDB() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VER);
-    req.onupgradeneeded = e => {
-      const dbn = e.target.result;
-      if (!dbn.objectStoreNames.contains('transactions')) {
-        dbn.createObjectStore('transactions', { keyPath: 'id' });
+  return new Promise((res, rej) => {
+    const req = indexedDB.open('simple-accounting', 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('transactions')) {
+        const s = db.createObjectStore('transactions', { keyPath: 'id' });
+        s.createIndex('dateKey', 'dateKey', { unique: false });
       }
-      if (!dbn.objectStoreNames.contains('settings')) {
-        dbn.createObjectStore('settings', { keyPath: 'key' });
+      if (!db.objectStoreNames.contains('settings')) {
+        db.createObjectStore('settings', { keyPath: 'key' });
+      }
+      if (!db.objectStoreNames.contains('edits')) {
+        db.createObjectStore('edits', { keyPath: 'id' });
       }
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-function idbGetAll(store) {
-  return new Promise((res, rej) => {
-    const req = db.transaction(store, 'readonly').objectStore(store).getAll();
-    req.onsuccess = () => res(req.result || []);
+    req.onsuccess = () => res(req.result);
     req.onerror = () => rej(req.error);
   });
 }
@@ -59,6 +119,20 @@ function idbSet(store, value) {
     req.onerror = () => rej(req.error);
   });
 }
+function idbGetAll(store) {
+  return new Promise((res, rej) => {
+    const req = db.transaction(store, 'readonly').objectStore(store).getAll();
+    req.onsuccess = () => res(req.result || []);
+    req.onerror = () => rej(req.error);
+  });
+}
+function idbGet(store, key) {
+  return new Promise((res, rej) => {
+    const req = db.transaction(store, 'readonly').objectStore(store).get(key);
+    req.onsuccess = () => res(req.result);
+    req.onerror = () => rej(req.error);
+  });
+}
 function idbDelete(store, key) {
   return new Promise((res, rej) => {
     const req = db.transaction(store, 'readwrite').objectStore(store).delete(key);
@@ -66,6 +140,7 @@ function idbDelete(store, key) {
     req.onerror = () => rej(req.error);
   });
 }
+// ✅ Added missing clear
 function idbClear(store) {
   return new Promise((res, rej) => {
     const req = db.transaction(store, 'readwrite').objectStore(store).clear();
@@ -74,35 +149,38 @@ function idbClear(store) {
   });
 }
 
-/* ====== PIN Lock ====== */
-async function sha256(text) {
-  const enc = new TextEncoder().encode(text);
+/* ====== PIN lock (local) ====== */
+async function sha256(str) {
+  const enc = new TextEncoder().encode(str);
   const buf = await crypto.subtle.digest('SHA-256', enc);
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
-
 async function showPinLock() {
   const pinOverlay = el('pinOverlay');
   const pinInput = el('pinInput');
-  const pinSubmit = el('pinSubmit');
-  const pinError = el('pinError');
+  const pinSubmit = el('pinSubmit'); // ✅ Unlock button
   const pinReset = el('pinReset');
-  const pinSub = el('pinSubheading');
+  const pinError = el('pinError');
+  const saved = await idbGet('settings', 'pinHash');
 
-  const saved = await new Promise((res) => {
-    const tx = db.transaction('settings', 'readonly').objectStore('settings').get('pinHash');
-    tx.onsuccess = () => res(tx.result);
+  const isSetup = !!saved?.value;
+  el('pinSubheading').textContent = isSetup ? 'This keeps data private on this device.' : 'Create a 4-digit PIN for this device.';
+
+  pinOverlay.classList.remove('hidden');
+  el('app').classList.add('hidden');
+
+  pinReset.addEventListener('click', async () => {
+    if (!confirm('This will erase all app data on this device. Continue?')) return;
+    indexedDB.deleteDatabase('simple-accounting');
+    localStorage.clear();
+    location.reload();
   });
 
-  const isSetup = !!saved;
-  pinSub.textContent = isSetup ? 'Enter your 4-digit PIN.' : 'Set a 4-digit PIN.';
-  pinSubmit.textContent = isSetup ? 'Unlock' : 'Set PIN';
-  pinOverlay.classList.remove('hidden');
-
-  pinSubmit.onclick = async () => {
+  pinSubmit.addEventListener('click', async () => {
     const val = pinInput.value.trim();
+    pinError.classList.add('hidden');
     if (!/^\d{4}$/.test(val)) {
-      pinError.textContent = 'Enter 4 digits.';
+      pinError.textContent = 'PIN must be 4 digits.';
       pinError.classList.remove('hidden');
       return;
     }
@@ -119,108 +197,341 @@ async function showPinLock() {
       await idbSet('settings', { key: 'pinHash', value: hash });
       pinOverlay.classList.add('hidden');
       el('app').classList.remove('hidden');
-      toast('PIN set.');
+      toast('PIN set. Keep it safe.');
     }
-    pinInput.value = '';
-  };
-
-  pinReset.onclick = async () => {
-    if (confirm('Reset PIN only? Transactions will remain.')) {
-      await idbClear('settings');   // clear only PIN
-      location.reload();
-    }
-  };
+  });
 }
 
-/* ====== Number to Words ====== */
-function numberToWords(num) {
-  if (num === 0) return "zero";
-  const ones = ["", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
-    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"];
-  const tens = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
+/* ====== Main ====== */
+(async function () {
+  db = await openDB();
+  updateOnline();
 
-  function helper(n) {
-    if (n < 20) return ones[n];
-    if (n < 100) return tens[Math.floor(n / 10)] + (n % 10 ? " " + ones[n % 10] : "");
-    if (n < 1000) return ones[Math.floor(n / 100)] + " hundred" + (n % 100 ? " " + helper(n % 100) : "");
-    if (n < 100000) return helper(Math.floor(n / 1000)) + " thousand" + (n % 1000 ? " " + helper(n % 1000) : "");
-    if (n < 10000000) return helper(Math.floor(n / 100000)) + " lakh" + (n % 100000 ? " " + helper(n % 100000) : "");
-    return helper(Math.floor(n / 10000000)) + " crore" + (n % 10000000 ? " " + helper(n % 10000000) : "");
+  el('reportDate').value = istDateKey();
+
+  el('txAmount').addEventListener('input', () => {
+    const v = Number(el('txAmount').value || 0);
+    el('amountInWords').textContent = v ? numToWords(v) + ' only' : '';
+  });
+
+  el('saveEntry').addEventListener('click', saveEntry);
+  el('clearForm').addEventListener('click', clearForm);
+    // ERASE ALL DATA BUTTON
+  el('wipeAll')?.addEventListener('click', async () => {
+    const pwd = prompt("Enter password to erase ALL data:");
+    if (pwd !== "@Faruk123") {
+      alert("❌ Incorrect password. Data not erased.");
+      return;
+    }
+    const sure = confirm("⚠️ This will ERASE ALL transactions permanently. Continue?");
+    if (!sure) return;
+    await idbClear("transactions");
+    await refreshTotals();
+    await loadDayEntries();
+    toast("🗑️ All accounting data erased.");
+  });
+
+
+  el('reportDate').addEventListener('change', loadDayEntries);
+  el('loadDay').addEventListener('click', loadDayEntries);
+
+  let exportMode = "pdf";
+  el('btnPdf').addEventListener('click', async () => {
+    exportMode = "pdf";
+    el('confirmDenom').textContent = "Generate PDF";
+    const date = el('reportDate').value || istDateKey();
+    const { totals } = await getDayData(date);
+    el('denomModalBalance').textContent = rupeesForPDF(totals.balance);
+    loadDefaultDenoms();
+    el('reportDenomMatch').textContent = "";
+    el('denomModal').classList.remove('hidden');
+  });
+
+  el('btnExcel').addEventListener('click', async () => {
+    exportMode = "excel";
+    el('confirmDenom').textContent = "Generate Excel";
+    const date = el('reportDate').value || istDateKey();
+    const { totals } = await getDayData(date);
+    el('denomModalBalance').textContent = rupeesForPDF(totals.balance);
+    loadDefaultDenoms();
+    el('reportDenomMatch').textContent = "";
+    el('denomModal').classList.remove('hidden');
+  });
+
+  el('confirmDenom').addEventListener('click', async () => {
+  const denomTotal = updateDenoms();
+  const balance = parseINR(el('denomModalBalance').textContent);
+
+
+  if (denomTotal !== balance) {
+    el('reportDenomMatch').textContent = `❌ Denomination does not match balance. Still exporting...`;
+    el('reportDenomMatch').className = "text-red-600 mt-1 text-sm";
+    try {
+      const diff = denomTotal - balance;
+      const now = nowIST();
+      const adj = {
+  id: crypto.randomUUID(),
+  dateKey: istDateKey(now),
+  createdAt: now.toISOString(),
+  type: 'adjustment',
+  amount: diff,
+  note: diff > 0 ? 'Excess money detected (denomination mismatch)' : 'Shortage detected (denomination mismatch)',
+  meta: { source: 'denomCheck' }
+};
+
+      await idbSet('transactions', adj);
+      if ((el('reportDate').value || istDateKey()) === adj.dateKey) {
+        await loadDayEntries();
+      }
+      await refreshTotals();
+      toast('⚖️ Adjustment recorded');
+    } catch (e) {
+      console.error('Failed to record adjustment', e);
+    }
+  } else {
+    el('reportDenomMatch').textContent = "✅ Denomination matches balance.";
+    el('reportDenomMatch').className = "text-green-600 mt-1 text-sm";
   }
-  return helper(num);
+
+  // Always export after check
+  setTimeout(async () => {
+    el('denomModal').classList.add('hidden');
+    const date = el('reportDate').value || istDateKey();
+    if (exportMode === "pdf") {
+      await exportPDF(date);
+    } else {
+      await exportExcel(date);
+    }
+  }, 600);
+});
+
+
+  el('cancelDenom').addEventListener('click', () => el('denomModal').classList.add('hidden'));
+
+  await showPinLock();
+  await refreshTotals();
+  await loadDayEntries();
+
+   // ✅ Step 2: Handle correction checkbox (show open adjustments only)
+el('txCorrection').addEventListener('change', async (e) => {
+  const dropdown = el('txCorrectionAdjust');
+  if (e.target.checked) {
+    await refreshCorrectionDropdown();
+    dropdown.classList.remove('hidden');
+  } else {
+    dropdown.classList.add('hidden');
+    dropdown.innerHTML = '';
+  }
+});
+
+})();
+
+/* ====== Adjustment helpers (open balance) ====== */
+async function getOpenAdjustments() {
+  const all = await idbGetAll('transactions');
+
+  // Originals = adjustments that are NOT reversals
+  const originals = all.filter(t =>
+    t.type === 'adjustment' && !(t.meta && t.meta.reversedAdjId)
+  );
+
+  // Sum of reversals per original
+  const appliedMap = {};
+  all.forEach(t => {
+    if (t.type === 'adjustment' && t.meta && t.meta.reversedAdjId) {
+      appliedMap[t.meta.reversedAdjId] = (appliedMap[t.meta.reversedAdjId] || 0) + t.amount;
+    }
+  });
+
+  // openAmount = original.amount + sum(reversals)
+  return originals
+    .map(adj => {
+      const applied = appliedMap[adj.id] || 0;
+      const open = adj.amount + applied; // reversals carry sign
+      return { ...adj, openAmount: open };
+    })
+    .filter(a => Math.round(a.openAmount) !== 0); // only show with remaining balance
 }
 
-/* ====== Save Entry ====== */
-function resetForm() {
+async function refreshCorrectionDropdown() {
+  const dropdown = el('txCorrectionAdjust');
+  dropdown.innerHTML = '';
+  const openList = await getOpenAdjustments();
+
+  if (openList.length === 0) {
+    dropdown.innerHTML = '<option>No open adjustments</option>';
+    return;
+  }
+  openList.forEach(a => {
+    const opt = document.createElement('option');
+    opt.value = a.id;
+    const kind = a.openAmount > 0 ? 'Excess' : 'Shortage';
+    // show OPEN amount, not original
+    opt.textContent = `${istDisplayDate(a.dateKey)} → ${kind} ${rupeesForPDF(Math.abs(a.openAmount))} (open)`;
+    dropdown.appendChild(opt);
+  });
+}
+
+
+/* ====== Entry form ====== */
+
+function clearForm() {
+  // reset inputs
   el('txType').value = 'income';
   el('txAmount').value = '';
-  el('txNote').value = '';
   el('amountInWords').textContent = '';
+  el('txNote').value = '';
+
+  // reset correction UI
+  el('txCorrection').checked = false;
+  const dd = el('txCorrectionAdjust');
+  dd.classList.add('hidden');
+  dd.innerHTML = '';
 }
+
 
 async function saveEntry() {
-  const type = el('txType').value;
-  const note = el('txNote').value.trim();
-  const amount = Number(el('txAmount').value || 0);
-  if (amount <= 0) { alert('Enter valid amount'); return; }
+  try {
+    const type = el('txType').value;
+    const note = el('txNote').value.trim();
+    const amount = Number(el('txAmount').value || 0);
+    if (amount <= 0) {
+      alert('Enter valid amount');
+      return;
+    }
 
-  const now = nowIST();
-  const data = {
-    id: crypto.randomUUID(),
-    type, amount, note,
-    createdAt: now.toISOString(),
-    dateKey: istDateKey(now)
-  };
-  await idbSet('transactions', data);
-  toast('Saved.');
-  resetForm();
-  refreshTotals();
-  if (el('reportDate').value === data.dateKey) loadDayEntries();
+    const now = nowIST();
+
+    if (el('txCorrection').checked) {
+      // --- Correction flow: create ONLY the adjustment reversal entry
+      const chosenId = el('txCorrectionAdjust').value;
+      if (chosenId) {
+        const openList = await getOpenAdjustments();
+        const target = openList.find(a => a.id === chosenId);
+
+        if (target) {
+          const open = target.openAmount; // may be + (excess) or - (shortage)
+          const reverseAbs = Math.min(Math.abs(open), amount);
+          const reverseSigned = open > 0 ? -reverseAbs : +reverseAbs; // cancel the open
+
+          const correction = {
+            id: crypto.randomUUID(),
+            dateKey: istDateKey(now),
+            createdAt: now.toISOString(),
+            type: "adjustment",
+            amount: reverseSigned,
+            note: note || `Correction via ${type}`,
+            meta: {
+              coveredBy: type,               // "income" or "expense"
+              coveredAmount: amount,         // what user typed
+              reversedAdjId: target.id,      // which original we’re covering
+              reversedFrom: target.dateKey   // original date
+            }
+          };
+
+          await idbSet('transactions', correction);
+          toast('✅ Correction saved');
+        }
+      }
+    } else {
+      // --- Normal income / expense entry
+      const data = {
+        id: crypto.randomUUID(),
+        dateKey: istDateKey(now),
+        createdAt: now.toISOString(),
+        type,
+        amount,
+        note
+      };
+      await idbSet('transactions', data);
+      toast('✅ Entry saved');
+    }
+
+    // Reset form & refresh UI (instant)
+    clearForm();
+    await refreshTotals();
+    await loadDayEntries();
+
+    // If the correction box is open again, repopulate with fresh open balances
+    if (el('txCorrection').checked) {
+      await refreshCorrectionDropdown();
+    }
+
+  } catch (err) {
+    console.error('Save failed:', err);
+    alert('Save failed. Please try again.');
+  }
 }
 
-/* ====== Totals (global header cards) ====== */
+
+
+
+/* ====== Totals ====== */
 async function refreshTotals() {
   const all = await idbGetAll('transactions');
   const inc = all.filter(t => t.type === 'income').reduce((a, b) => a + b.amount, 0);
   const exp = all.filter(t => t.type === 'expense').reduce((a, b) => a + b.amount, 0);
+  const adj = all.filter(t => t.type === 'adjustment').reduce((a, b) => a + b.amount, 0);
+
+  const balance = inc - exp + adj;
+
+  // Update main cards
   el('totalIncome').textContent = rupeesForPDF(inc);
   el('totalExpense').textContent = rupeesForPDF(exp);
-  el('currentBalance').textContent = rupeesForPDF(inc - exp);
+  el('currentBalance').textContent = rupeesForPDF(balance);
+
+  // Update Adjustment card
+  const adjEl = el('adjustmentCard');
+  if (adjEl) {
+    if (adj > 0) {
+      adjEl.textContent = `+${rupeesForPDF(adj)}`;
+      adjEl.className = "font-bold text-lg text-green-600";
+    } else if (adj < 0) {
+      adjEl.textContent = `-${rupeesForPDF(Math.abs(adj))}`;
+      adjEl.className = "font-bold text-lg text-red-600";
+    } else {
+      adjEl.textContent = rupeesForPDF(0);
+      adjEl.className = "font-bold text-lg text-gray-600";
+    }
+  }
 }
 
-/* ====== Load Entries (selected day) ====== */
+
+
+/* ====== Load Entries ====== */
 async function loadDayEntries() {
   const date = el('reportDate').value || istDateKey();
   const list = await idbGetAll('transactions');
-  const filtered = list.filter(t => t.dateKey === date).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const filtered = list
+    .filter(t => t.dateKey === date)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
   renderList(filtered);
+
+  // If correction mode is on, keep its dropdown fresh
+  if (el('txCorrection').checked) {
+    await refreshCorrectionDropdown();
+  }
 }
+
 function renderList(arr) {
   const tbody = el('listTbody');
   tbody.innerHTML = '';
-
   arr.forEach(tx => {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${istDisplayTime(tx.createdAt)}</td>
-      <td>${tx.type === 'income' ? 'Income 💰' : 'Expense 💸'}</td>
-      <td>${rupees(tx.amount)}</td>
+      <td>${tx.type === 'income' ? 'Income 💰' : (tx.type === 'expense' ? 'Expense 💸' : 'Adjustment ⚖️')}</td>
+      <td>${rupeesForPDF(tx.amount)}</td>
       <td>${tx.note || '-'}</td>
       <td>
-        <button data-id="${tx.id}" 
-                class="editEntry bg-blue-600 text-white px-2 py-1 rounded-md text-xs hover:bg-blue-700">
-          Edit
-        </button>
-        <button data-id="${tx.id}" 
-                class="deleteEntry bg-rose-600 text-white px-2 py-1 rounded-md text-xs hover:bg-rose-700">
-          Delete
-        </button>
+        <button data-id="${tx.id}" class="editEntry bg-blue-600 text-white px-2 py-1 rounded-md text-xs hover:bg-blue-700">Edit</button>
+        <button data-id="${tx.id}" class="deleteEntry bg-rose-600 text-white px-2 py-1 rounded-md text-xs hover:bg-rose-700">Delete</button>
       </td>
     `;
     tbody.appendChild(tr);
   });
 
-  // delete
   tbody.querySelectorAll('button.deleteEntry').forEach(btn => {
     btn.addEventListener('click', async () => {
       const pass = prompt("Enter password to delete:");
@@ -232,277 +543,56 @@ function renderList(arr) {
         await idbDelete('transactions', btn.dataset.id);
         loadDayEntries();
         refreshTotals();
-        toast("✅ Entry deleted");
+        toast("🗑️ Deleted");
       }
     });
   });
 
-  // edit
   tbody.querySelectorAll('button.editEntry').forEach(btn => {
     btn.addEventListener('click', async () => {
-      const all = await idbGetAll('transactions');
-      const tx = all.find(t => t.id === btn.dataset.id);
+      const id = btn.dataset.id;
+      const list = await idbGetAll('transactions');
+      const tx = list.find(x => x.id === id);
       if (!tx) return;
-
-      const newAmount = prompt("Edit Amount:", tx.amount);
-      const newNote = prompt("Edit Note:", tx.note || "");
-
-      if (newAmount !== null && newNote !== null) {
-        const oldData = { amount: tx.amount, note: tx.note };
-        tx.amount = Number(newAmount);
-        tx.note = newNote;
-        tx.edits = tx.edits || [];
-        tx.edits.push({
-          time: nowIST().toISOString(),
-          old: oldData,
-          new: { amount: tx.amount, note: tx.note }
-        });
-
-        await idbSet('transactions', tx);
-        loadDayEntries();
-        refreshTotals();
-        toast("✅ Entry updated");
-      }
+      const amount = prompt('Edit amount (₹):', tx.amount);
+      if (amount === null) return;
+      const amt = Number(amount || 0);
+      if (!Number.isFinite(amt) || amt <= 0) { alert('Invalid amount'); return; }
+      const note = prompt('Edit note:', tx.note || '') ?? tx.note;
+      const oldData = { amount: tx.amount, note: tx.note };
+      tx.amount = amt;
+      tx.note = (note || '').trim();
+      await idbSet('edits', {
+        id: crypto.randomUUID(),
+        txId: tx.id,
+        dateKey: tx.dateKey,
+        time: nowIST().toISOString(),
+        old: oldData,
+        new: { amount: tx.amount, note: tx.note }
+      });
+      await idbSet('transactions', tx);
+      loadDayEntries();
+      refreshTotals();
+      toast("✅ Entry updated");
     });
   });
 }
 
-/* ====== Report Data (selected day only) ====== */
+/* ====== Report Data ====== */
 async function getDayData(dateKey) {
   const rowsAll = await idbGetAll('transactions');
-  const rows = rowsAll.filter(r => r.dateKey === dateKey).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  const incomes = rows.filter(r => r.type === 'income');
-  const expenses = rows.filter(r => r.type === 'expense');
-  const totals = {
-    income: incomes.reduce((a, b) => a + b.amount, 0),
-    expense: expenses.reduce((a, b) => a + b.amount, 0),
-    balance: incomes.reduce((a, b) => a + b.amount, 0) - expenses.reduce((a, b) => a + b.amount, 0) // <-- FIXED (date-scoped)
-  };
-  return { rows, totals };
-}
-
-/* ====== Export PDF ====== */
-async function exportPDF(dateKey) {
-  const { rows, totals } = await getDayData(dateKey);
-  const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ unit: 'pt', format: 'a4' });
-
-  // Header
-  doc.setFontSize(14);
-  doc.text('\u200BSimple Accounting Report', 40, 40);
-  doc.setFontSize(10);
-  doc.text(`\u200BDate: ${dateKey}`, 40, 58);
-  const genTime = dayjs().tz(IST_TZ).format('DD-MM-YYYY hh:mm A');
-  doc.text(`\u200BGenerated on: ${genTime}`, 40, 72);
-
-  let y = 90;
-
-  // Income
-  const incomes = rows.filter(r => r.type === 'income');
-  if (incomes.length) {
-    doc.setFontSize(12);
-    doc.setTextColor(0, 150, 0); // green
-    doc.text('\u200BIncome Entries', 40, y);
-    doc.setTextColor(0, 0, 0); // reset
-    doc.autoTable({
-      head: [['Time', 'Amount', 'Note']],
-      body: incomes.map(r => [istDisplayTime(r.createdAt), rupeesForPDF(r.amount), r.note || '']),
-      startY: y + 10
-    });
-    y = doc.lastAutoTable.finalY + 25;
-  }
-
-  // Expense
-  const expenses = rows.filter(r => r.type === 'expense');
-  if (expenses.length) {
-    doc.setFontSize(12);
-    doc.setTextColor(200, 0, 0); // red
-    doc.text('\u200BExpense Entries', 40, y);
-    doc.setTextColor(0, 0, 0); // reset
-    doc.autoTable({
-      head: [['Time', 'Amount', 'Note']],
-      body: expenses.map(r => [istDisplayTime(r.createdAt), rupeesForPDF(r.amount), r.note || '']),
-      startY: y + 10
-    });
-    y = doc.lastAutoTable.finalY + 25;
-  }
-
-  // Summary
-  doc.setFontSize(12);
-  doc.setTextColor(0, 0, 0); // black
-  doc.text('\u200BSummary', 40, y);
-  doc.setFontSize(11);
-  y += 18;
-  doc.text(`\u200BTotal Income: ${rupeesForPDF(totals.income)}`, 40, y);
-  y += 16;
-  doc.text(`\u200BTotal Expense: ${rupeesForPDF(totals.expense)}`, 40, y);
-  y += 16;
-  doc.text(`\u200BBalance: ${rupeesForPDF(totals.balance)}`, 40, y);
-  y += 30;
-
-  // Denominations (keep raw numbers, format on display)
-  const denomRows = [];
-  document.querySelectorAll('#reportDenomTbody tr').forEach(r => {
-    const inp = r.querySelector('input');
-    const v = Number(inp?.dataset?.val || 0);
-    const c = Number(inp?.value || 0);
-    if (c > 0) denomRows.push([v, c, v * c]);
+  const rows = rowsAll.filter(r => r.dateKey === dateKey);
+  const list = rows.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const totals = { income: 0, expense: 0, adjustment: 0, balance: 0 };
+  list.forEach(r => {
+    if (r.type === 'income') totals.income += r.amount;
+    if (r.type === 'expense') totals.expense += r.amount;
+    if (r.type === 'adjustment') totals.adjustment += r.amount;
   });
-
-  if (denomRows.length) {
-    doc.setFontSize(12);
-    doc.setTextColor(150, 75, 0); // brown
-    doc.text('\u200BDenominations', 40, y);
-    doc.setTextColor(0, 0, 0); // reset
-    doc.autoTable({
-      head: [['Denom', 'Count', 'Subtotal']],
-      body: denomRows.map(([v, c, sub]) => [`${v}`, c, rupeesForPDF(sub)]),
-      startY: y + 10
-    });
-    y = doc.lastAutoTable.finalY + 20;
-
-    const denomTotal = denomRows.reduce((a, [, , sub]) => a + sub, 0);
-    doc.setFontSize(11);
-    doc.text(`\u200BDenomination Total: ${rupeesForPDF(denomTotal)}`, 40, y);
-    y += 16;
-
-    if (denomTotal === totals.balance) {
-      doc.setTextColor(0, 150, 0);
-      doc.text("\u200B✅ Denomination matches Balance", 40, y);
-    } else if (denomTotal < totals.balance) {
-      doc.setTextColor(200, 150, 0);
-      doc.text(`\u200B⚠ Short by ${rupeesForPDF(totals.balance - denomTotal)}`, 40, y);
-    } else {
-      doc.setTextColor(200, 0, 0);
-      doc.text(`\u200B⚠ Excess by ${rupeesForPDF(denomTotal - totals.balance)}`, 40, y);
-    }
-    doc.setTextColor(0, 0, 0); // reset
-    y += 25;
-  }
-
-  // Edited Entries (at the end)
-  const edited = rows.filter(r => r.edits && r.edits.length);
-  if (edited.length) {
-    doc.setFontSize(12);
-    doc.setTextColor(0, 0, 200); // blue
-    doc.text('\u200BEdited Entries', 40, y);
-    doc.setTextColor(0, 0, 0); // reset
-    doc.autoTable({
-      head: [['Time of Edit', 'Type', 'Old Amount', 'New Amount', 'Old Note', 'New Note']],
-      body: edited.flatMap(r =>
-        r.edits.map(e => [
-          istDisplayTime(e.time),
-          r.type === 'income' ? 'Income ' : 'Expense ',
-          rupeesForPDF(e.old.amount), rupeesForPDF(e.new.amount),
-          e.old.note || '-', e.new.note || '-'
-        ])
-      ),
-      startY: y + 10
-    });
-  }
-
-  doc.save(`report-${dateKey}.pdf`);
-  toast('PDF exported.');
+  totals.balance = totals.income - totals.expense + totals.adjustment;
+  return { list, totals };
 }
-
-
-/* ====== Export Excel ====== */
-async function exportExcel(dateKey) {
-  const { rows, totals } = await getDayData(dateKey);
-
-  const wb = XLSX.utils.book_new();
-  const sheetData = [];
-
-  // Header
-  sheetData.push(["Simple Accounting Report"]);
-  sheetData.push([`Date: ${dateKey}`]);
-  const genTime = dayjs().tz(IST_TZ).format('DD-MM-YYYY hh:mm A');
-  sheetData.push([`Generated on: ${genTime}`]);
-  sheetData.push([]);
-
-  // Income
-  const incomes = rows.filter(r => r.type === 'income');
-  if (incomes.length) {
-    sheetData.push(["Income Entries"]);
-    sheetData.push(["Time", "Amount", "Note"]);
-    incomes.forEach(r => sheetData.push([istDisplayTime(r.createdAt), r.amount, r.note || ""]));
-    sheetData.push(["Total Income", totals.income]);
-    sheetData.push([]);
-  }
-
-  // Expense
-  const expenses = rows.filter(r => r.type === 'expense');
-  if (expenses.length) {
-    sheetData.push(["Expense Entries"]);
-    sheetData.push(["Time", "Amount", "Note"]);
-    expenses.forEach(r => sheetData.push([istDisplayTime(r.createdAt), r.amount, r.note || ""]));
-    sheetData.push(["Total Expense", totals.expense]);
-    sheetData.push([]);
-  }
-
-  // Summary
-  sheetData.push(["Summary"]);
-  sheetData.push(["Total Income", totals.income]);
-  sheetData.push(["Total Expense", totals.expense]);
-  sheetData.push(["Balance", totals.balance]);
-  sheetData.push([]);
-
-  // Denominations (raw numbers)
-  sheetData.push(["Denominations"]);
-  sheetData.push(["Denom", "Count", "Subtotal"]);
-  const denomRows = [];
-  document.querySelectorAll('#reportDenomTbody tr').forEach(r => {
-    const inp = r.querySelector('input');
-    const v = Number(inp?.dataset?.val || 0);
-    const c = Number(inp?.value || 0);
-    if (c > 0) denomRows.push([v, c, v * c]);
-  });
-  denomRows.forEach(r => sheetData.push(r));
-
-  const denomTotal = denomRows.reduce((a, [, , sub]) => a + sub, 0);
-  sheetData.push([]);
-  sheetData.push(["Denomination Total", denomTotal]);
-  if (denomTotal === totals.balance) sheetData.push(["✅ Denomination matches Balance"]);
-  else if (denomTotal < totals.balance) sheetData.push([`⚠ Short by ${totals.balance - denomTotal}`]);
-  else sheetData.push([`⚠ Excess by ${denomTotal - totals.balance}`]);
-  sheetData.push([]);
-
-  // Edited Entries (AT THE END ONLY)
-  const edited = rows.filter(r => r.edits && r.edits.length);
-  if (edited.length) {
-    sheetData.push(["Edited Entries"]);
-    sheetData.push(["Time of Edit", "Type", "Old Amount", "New Amount", "Old Note", "New Note"]);
-    edited.forEach(r => {
-      r.edits.forEach(e => {
-        sheetData.push([
-          istDisplayTime(e.time),
-          r.type === 'income' ? 'Income' : 'Expense',
-          e.old.amount, e.new.amount,
-          e.old.note || "", e.new.note || ""
-        ]);
-      });
-    });
-    sheetData.push([]);
-  }
-
-  const ws = XLSX.utils.aoa_to_sheet(sheetData);
-
-  // Auto column width
-  const colWidths = [];
-  sheetData.forEach(row => {
-    row.forEach((val, i) => {
-      const len = String(val || "").length;
-      colWidths[i] = Math.max(colWidths[i] || 10, len + 4);
-    });
-  });
-  ws['!cols'] = colWidths.map(w => ({ wch: w }));
-
-  XLSX.utils.book_append_sheet(wb, ws, "Report");
-  XLSX.writeFile(wb, `report-${dateKey}.xlsx`);
-  toast("Excel exported.");
-}
-
-/* ====== Denomination Helpers (modal) ====== */
+/* ====== Denominations Helpers ====== */
 function loadDefaultDenoms() {
   const denoms = [500, 200, 100, 50, 20, 10, 5, 2, 1];  // No ₹2000
   const tbody = el('reportDenomTbody');
@@ -531,119 +621,247 @@ function updateDenoms() {
     r.querySelector('.denomSubtotal').textContent = rupeesForPDF(sub);
     total += sub;
   });
-  el('reportDenomTotal').textContent = rupees(total);
+  el('reportDenomTotal').textContent = rupeesForPDF(total);
 
   // Compare with balance and show +/- (modal display only)
-  const balanceText = el('denomModalBalance').textContent.replace(/[₹,]/g, '');
-  const balance = Number(balanceText) || 0;
+  const balance = parseINR(el('denomModalBalance').textContent);
+
   const diff = total - balance;
 
   if (diff === 0) {
     el('reportDenomMatch').textContent = "✅ Exact match";
     el('reportDenomMatch').className = "text-green-600 mt-1 text-sm text-center";
   } else if (diff < 0) {
-    el('reportDenomMatch').textContent = `− ${rupees(Math.abs(diff))} left`;
+    el('reportDenomMatch').textContent = `− ${rupeesForPDF(Math.abs(diff))} left`;
     el('reportDenomMatch').className = "text-yellow-600 mt-1 text-sm text-center";
   } else {
-    el('reportDenomMatch').textContent = `+ ${rupees(diff)} excess`;
+    el('reportDenomMatch').textContent = `+ ${rupeesForPDF(diff)} excess`;
     el('reportDenomMatch').className = "text-red-600 mt-1 text-sm text-center";
   }
 
   return total;
 }
 
-/* ====== Init ====== */
-let exportMode = "pdf"; // default
+/* ====== Export PDF ====== */
+// (keeping your corporate PDF export unchanged)
+/* ====== Export PDF (Corporate Style) ====== */
+/* ====== Export PDF (Corporate Style) ====== */
+async function exportPDF(dateKey) {
+  const { list, totals } = await getDayData(dateKey);
+  const rows = list;
 
-(async function init() {
-  db = await openDB();
-  el('reportDate').value = istDateKey();
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
 
-  el('saveEntry').addEventListener('click', saveEntry);
-  el('clearForm').addEventListener('click', resetForm);
-  el('loadDay').addEventListener('click', loadDayEntries);
+  // --- Header ---
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(16);
+  doc.text("Daily Cash Report", 105, 20, { align: "center" });
 
-    // 🔹 Auto-load entries when user changes the report date
-  el('reportDate').addEventListener('change', loadDayEntries);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(11);
+  doc.text(`Date: ${istDisplayDate(dateKey)}`, 14, 32);
+  const genTime = dayjs().tz(IST_TZ).format("DD-MM-YYYY hh:mm A");
+  doc.text(`Generated on: ${genTime}`, 14, 39);
 
-  // secure wipeAll with password
-  el('wipeAll').addEventListener('click', async () => {
-    const pwd = prompt('Enter password to erase all data:');
-    if (pwd !== '@Faruk123') {
-      alert('❌ Incorrect password. Data not erased.');
-      return;
-    }
-    const sure = confirm('⚠️ This will ERASE ALL transactions permanently. Continue?');
-    if (!sure) return;
-    await idbClear('transactions');
-    await refreshTotals();
-    await loadDayEntries();
-    toast('All data erased.');
+  let y = 50;
+
+  // --- Income ---
+  const incomes = rows.filter(r => r.type === "income");
+  if (incomes.length) {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.text("Cash Deposit", 14, y);
+    y += 8;
+
+    doc.autoTable({
+      head: [["Time", "Amount", "Note"]],
+      body: incomes.map(r => [
+        istDisplayTime(r.createdAt),
+        rupeesForPDF(r.amount),
+        r.note || ""
+      ]),
+      startY: y,
+      theme: "grid",
+      headStyles: { fillColor: [0, 100, 0] },
+    });
+    y = doc.lastAutoTable.finalY + 15;
+  }
+
+  // --- Expense ---
+  const expenses = rows.filter(r => r.type === "expense");
+  if (expenses.length) {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.text("Expense Entries", 14, y);
+    y += 8;
+
+    doc.autoTable({
+      head: [["Time", "Amount", "Note"]],
+      body: expenses.map(r => [
+        istDisplayTime(r.createdAt),
+        rupeesForPDF(r.amount),
+        r.note || ""
+      ]),
+      startY: y,
+      theme: "grid",
+      headStyles: { fillColor: [139, 0, 0] },
+    });
+    y = doc.lastAutoTable.finalY + 15;
+  }
+
+  // --- Summary ---
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(13);
+  doc.text("Summary", 14, y);
+  y += 8;
+
+  const summaryRows = [
+    ["Total Cash Deposit", rupeesForPDF(totals.income)],
+    ["Total Expense", rupeesForPDF(totals.expense)],
+    ["Closing Amount", rupeesForPDF(totals.balance)],
+    ["Excess / Shortage",
+      (totals.adjustment >= 0 ? "+" : "- ") + rupeesForPDF(Math.abs(totals.adjustment))]
+  ];
+  
+    
+  
+  doc.autoTable({
+    head: [["Category", "Amount"]],
+    body: summaryRows,
+    startY: y,
+    theme: "grid",
+    headStyles: { fillColor: [0, 0, 120] },
+    styles: { fontStyle: "bold" }
+  });
+  y = doc.lastAutoTable.finalY + 15;
+
+  // --- Resolved Adjustments ---
+const resolved = rows.filter(r => r.type === "adjustment" && r.meta?.reversedAdjId);
+if (resolved.length) {
+  y = doc.lastAutoTable ? doc.lastAutoTable.finalY + 15 : y + 15;
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(13);
+  doc.text("Resolved Adjustments", 14, y);
+  y += 8;
+
+  doc.autoTable({
+    head: [["Original Date", "Resolved Amount", "Covered By", "Note"]],
+    body: resolved.map(r => [
+      istDisplayDate(r.meta.reversedFrom),
+      rupeesForPDF(Math.abs(r.amount)),
+      r.meta.coveredBy,
+      r.note || ""
+    ]),
+    startY: y,
+    theme: "grid",
+    headStyles: { fillColor: [0, 80, 150] }
+  });
+  y = doc.lastAutoTable.finalY + 15;
+}
+
+
+  // --- Denominations ---
+  const denomRows = [];
+  document.querySelectorAll("#reportDenomTbody tr").forEach(r => {
+    const inp = r.querySelector("input");
+    const v = Number(inp?.dataset?.val || 0);
+    const c = Number(inp?.value || 0);
+    if (c > 0) denomRows.push([`${v}`, c, rupeesForPDF(v * c)]);
   });
 
-  el('txAmount').addEventListener('input', () => {
-    const val = Number(el('txAmount').value || 0);
-    el('amountInWords').textContent = val > 0 ? numberToWords(val) + " rupees" : "";
+  if (denomRows.length) {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.text("Denominations", 14, y);
+    y += 8;
+
+    doc.autoTable({
+      head: [["Denomination", "Count", "Subtotal"]],
+      body: denomRows,
+      startY: y,
+      theme: "grid",
+      headStyles: { fillColor: [100, 50, 0] },
+    });
+    y = doc.lastAutoTable.finalY + 15;
+
+    const denomTotal = denomRows.reduce((a, [, , sub]) => a + parseINR(sub), 0);
+
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(11);
+    doc.text(`Denomination Total: ${rupeesForPDF(denomTotal)}`, 14, y);
+    y += 8;
+  }
+
+// --- Denomination Match Status ---
+const denomTotal = Array.from(document.querySelectorAll("#reportDenomTbody tr")).reduce((sum, r) => {
+  const inp = r.querySelector("input");
+  const v = Number(inp?.dataset?.val || 0);
+  const c = Number(inp?.value || 0);
+  return sum + (v * c);
+}, 0);
+
+const balance = parseINR(el('denomModalBalance').textContent);
+
+const diff = denomTotal - balance;
+
+doc.setFont("helvetica", "bold");
+doc.setFontSize(12);
+if (diff === 0) {
+  doc.text(" Denomination matched with balance.", 14, y);
+} else if (diff > 0) {
+  doc.text(` Denomination shows EXCESS of ${rupeesForPDF(diff)}`, 14, y);
+} else {
+  doc.text(` Denomination shows SHORTAGE of ${rupeesForPDF(Math.abs(diff))}`, 14, y);
+}
+y += 12;
+
+
+  // --- Footer ---
+  doc.setFontSize(9);
+  doc.setTextColor(100);
+  doc.text("This is a system generated report. No manual alterations.", 105, 290, { align: "center" });
+
+  doc.save(`report-${dateKey}.pdf`);
+  toast("📄 Corporate PDF exported.");
+}
+
+
+/* ====== Export Excel ====== */
+async function exportExcel(dateKey) {
+  const { list, totals } = await getDayData(dateKey);
+  const wb = XLSX.utils.book_new();
+  const sheetData = [];
+
+  sheetData.push(["Simple Accounting Report"]);
+  sheetData.push(["Date:", istDisplayDate(dateKey)]);
+  sheetData.push([]);
+
+  sheetData.push(["Time", "Type", "Amount", "Note"]);
+  list.forEach(tx => {
+    sheetData.push([istDisplayTime(tx.createdAt), tx.type, tx.amount, tx.note || ""]);
   });
 
-  /* ====== Denomination Modal Bindings (DATE-SCOPED BALANCE) ====== */
-  el('btnPdf').addEventListener('click', async () => {
-    exportMode = "pdf";
-    el('confirmDenom').textContent = "Generate PDF";
+  sheetData.push([]);
+  sheetData.push(["Summary"]);
+  sheetData.push(["Total Income", totals.income]);
+  sheetData.push(["Total Expense", totals.expense]);
+  sheetData.push(["Adjustment", totals.adjustment]);
+  sheetData.push(["Closing Balance", totals.balance]);
 
-    const date = el('reportDate').value || istDateKey();
-    const { totals } = await getDayData(date);     // <-- FIX: date-scoped
-    el('denomModalBalance').textContent = rupees(totals.balance);
-
-    loadDefaultDenoms();
-    el('reportDenomMatch').textContent = "";
-    el('denomModal').classList.remove('hidden');
+  // ✅ Add denomination rows
+  sheetData.push([]);
+  sheetData.push(["Denominations"]);
+  sheetData.push(["Denomination", "Count", "Subtotal"]);
+  document.querySelectorAll("#reportDenomTbody tr").forEach(r => {
+    const inp = r.querySelector("input");
+    const v = Number(inp?.dataset?.val || 0);
+    const c = Number(inp?.value || 0);
+    if (c > 0) sheetData.push([v, c, v * c]);
   });
-
-  el('btnExcel').addEventListener('click', async () => {
-    exportMode = "excel";
-    el('confirmDenom').textContent = "Generate Excel";
-
-    const date = el('reportDate').value || istDateKey();
-    const { totals } = await getDayData(date);     // <-- FIX: date-scoped
-    el('denomModalBalance').textContent = rupees(totals.balance);
-
-    loadDefaultDenoms();
-    el('reportDenomMatch').textContent = "";
-    el('denomModal').classList.remove('hidden');
-  });
-
-  el('confirmDenom').addEventListener('click', async () => {
-    const denomTotal = updateDenoms();
-
-    // (Modal uses date-scoped balance already shown on screen)
-    // We don't block export; we just inform and continue.
-    const balanceText = el('denomModalBalance').textContent.replace(/[₹,]/g, '');
-    const balance = Number(balanceText) || 0;
-
-    if (denomTotal !== balance) {
-      el('reportDenomMatch').textContent = `❌ Denomination does not match balance. Still exporting...`;
-      el('reportDenomMatch').className = "text-red-600 mt-1 text-sm";
-    } else {
-      el('reportDenomMatch').textContent = "✅ Denomination matches balance.";
-      el('reportDenomMatch').className = "text-green-600 mt-1 text-sm";
-    }
-
-    setTimeout(async () => {
-      el('denomModal').classList.add('hidden');
-      const date = el('reportDate').value || istDateKey();
-      if (exportMode === "pdf") {
-        await exportPDF(date);
-      } else {
-        await exportExcel(date);
-      }
-    }, 600);
-  });
-
-  el('cancelDenom').addEventListener('click', () => el('denomModal').classList.add('hidden'));
-
-  await showPinLock();
-  await refreshTotals();
-  await loadDayEntries();
-})();
-
+  
+  const ws = XLSX.utils.aoa_to_sheet(sheetData);
+  XLSX.utils.book_append_sheet(wb, ws, "Report");
+  XLSX.writeFile(wb, `Report_${dateKey}.xlsx`);
+}
