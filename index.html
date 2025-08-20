@@ -13,9 +13,10 @@
   <script defer src="https://cdn.jsdelivr.net/npm/dayjs@1/plugin/timezone.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.4/dist/jspdf.plugin.autotable.min.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 
+  <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 </head>
 <body class="h-full text-gray-900">
   <!-- PIN Lock Overlay -->
@@ -50,7 +51,7 @@
     </header>
 
     <!-- Totals -->
-    <section class="grid grid-cols-3 gap-3 mb-4">
+    <section class="grid grid-cols-3 gap-3 mb-2">
       <div class="card">
         <div class="text-xs uppercase text-gray-500">Total Income</div>
         <div id="totalIncome" class="text-xl font-bold">₹0</div>
@@ -62,6 +63,12 @@
       <div class="card">
         <div class="text-xs uppercase text-gray-500">Balance</div>
         <div id="currentBalance" class="text-xl font-bold">₹0</div>
+      </div>
+    </section>
+    <section class="grid grid-cols-1 gap-3 mb-4">
+      <div class="card">
+        <div class="text-xs uppercase text-gray-500">Adjustment</div>
+        <div id="adjustmentCard" class="text-xl font-bold">₹0</div>
       </div>
     </section>
 
@@ -87,9 +94,19 @@
         </div>
 
         <div>
-          <label class="label">Note</label>
-          <input id="txNote" class="input" placeholder="e.g., Person name / Shop rent" />
-        </div>
+  <label class="label">Note</label>
+  <input id="txNote" class="input" placeholder="e.g., Person name / Shop rent" />
+  
+  <!-- ✅ Correction Option -->
+  <div class="mt-2 flex items-center gap-2">
+    <input id="txCorrection" type="checkbox" class="w-4 h-4" />
+    <label for="txCorrection" class="text-sm">This is a correction of earlier excess/shortage</label>
+  </div>
+
+  <!-- ✅ Adjustment dropdown (hidden until checkbox ticked) -->
+  <select id="txCorrectionAdjust" class="input mt-2 hidden"></select>
+</div>
+
 
         <div class="flex gap-2 pt-2">
           <button id="saveEntry" class="btn-primary flex-1">Save Entry</button>
@@ -106,11 +123,8 @@
           <input id="reportDate" type="date" class="input !py-2" />
         </div>
         <div class="flex flex-wrap gap-2">
-          <button id="btnPdf" class="btn-secondary bg-sky-300" >Export PDF</button>
-          <button id="btnExcel" class="btn-secondary px-3 py-1 rounded-md bg-green-600 text-white hover:bg-green-700">
-  Export Excel
-</button>
-
+          <button id="btnPdf" class="btn-secondary bg-sky-300">Export PDF</button>
+          <button id="btnExcel" class="btn-secondary px-3 py-1 rounded-md bg-green-600 text-white hover:bg-green-700">Export Excel</button>
           <button id="btnCsv" class="btn-secondary">Export CSV</button>
         </div>
       </div>
@@ -144,43 +158,37 @@
   </div>
 
   <!-- Denomination Modal -->
-<!-- Denomination Modal -->
-<div id="denomModal" class="fixed inset-0 bg-black/40 z-[60] hidden flex items-center justify-center">
-  <div class="w-full max-w-sm bg-white rounded-2xl shadow-xl p-4 flex flex-col">
-    <h3 class="text-lg font-semibold mb-2 text-center">Enter Cash Denominations</h3>
-    <p class="text-sm text-gray-600 text-center mb-3">
-      Current Balance: <span id="denomModalBalance" class="font-semibold">₹0</span>
-    </p>
-
-    <div class="overflow-auto border rounded-lg max-h-72">
-      <table class="w-full text-xs">
-        <thead class="bg-gray-100">
-          <tr>
-            <th class="py-1 text-center">Denom</th>
-            <th class="py-1 text-center">Count</th>
-            <th class="py-1 text-center">Subtotal</th>
-          </tr>
-        </thead>
-        <tbody id="reportDenomTbody"></tbody>
-      </table>
-    </div>
-
-    <div class="flex justify-between mt-2 text-sm">
-      <span>Total:</span>
-      <span id="reportDenomTotal" class="font-semibold">₹0</span>
-    </div>
-    <div id="reportDenomMatch" class="mt-1 text-sm text-center"></div>
-
-    <div class="flex gap-2 justify-end mt-3">
-      <button id="cancelDenom" class="btn-secondary flex-1 py-1">Cancel</button>
-      <button id="confirmDenom" class="btn-primary flex-1 py-1">Generate PDF</button>
+  <div id="denomModal" class="fixed inset-0 bg-black/40 z-[60] hidden flex items-center justify-center">
+    <div class="w-full max-w-sm bg-white rounded-2xl shadow-xl p-4 flex flex-col">
+      <h3 class="text-lg font-semibold mb-2 text-center">Enter Cash Denominations</h3>
+      <p class="text-sm text-gray-600 text-center mb-3">
+        Current Balance: <span id="denomModalBalance" class="font-semibold">₹0</span>
+      </p>
+      <div class="overflow-auto border rounded-lg max-h-72">
+        <table class="w-full text-xs">
+          <thead class="bg-gray-100">
+            <tr>
+              <th class="py-1 text-center">Denom</th>
+              <th class="py-1 text-center">Count</</th>
+              <th class="py-1 text-center">Subtotal</th>
+            </tr>
+          </thead>
+          <tbody id="reportDenomTbody"></tbody>
+        </table>
+      </div>
+      <div class="flex justify-between mt-2 text-sm">
+        <span>Total:</span>
+        <span id="reportDenomTotal" class="font-semibold">₹0</span>
+      </div>
+      <div id="reportDenomMatch" class="mt-1 text-sm text-center"></div>
+      <div class="flex gap-2 justify-end mt-3">
+        <button id="cancelDenom" class="btn-secondary flex-1 py-1">Cancel</button>
+        <button id="confirmDenom" class="btn-primary flex-1 py-1">Generate PDF</button>
+      </div>
     </div>
   </div>
-</div>
-
 
   <script defer src="app.js"></script>
-
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
