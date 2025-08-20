@@ -3,7 +3,7 @@
   "short_name": "Accounting",
   "start_url": "./index.html",
   "display": "standalone",
-  "background_color": "#f1f5f9",
+  "background_color": "#ffffff",
   "theme_color": "#0ea5e9",
   "lang": "en-IN",
   "scope": "./",
@@ -20,5 +20,6 @@
     }
   ]
 }
+
 
 
