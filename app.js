@@ -563,6 +563,9 @@ let exportMode = "pdf"; // default
   el('clearForm').addEventListener('click', resetForm);
   el('loadDay').addEventListener('click', loadDayEntries);
 
+    // 🔹 Auto-load entries when user changes the report date
+  el('reportDate').addEventListener('change', loadDayEntries);
+
   // secure wipeAll with password
   el('wipeAll').addEventListener('click', async () => {
     const pwd = prompt('Enter password to erase all data:');
@@ -643,3 +646,4 @@ let exportMode = "pdf"; // default
   await refreshTotals();
   await loadDayEntries();
 })();
+
