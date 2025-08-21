@@ -1,4 +1,13 @@
 /* ====== Utilities ====== */
+// Safe UUID helper (fallback if crypto.randomUUID is missing)
+const uuid = () => (
+  (self.crypto && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+        (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
+      )
+);
+
 dayjs.extend(dayjs_plugin_utc);
 dayjs.extend(dayjs_plugin_timezone);
 const IST_TZ = 'Asia/Kolkata';
@@ -17,8 +26,11 @@ function rupeesForPDF(n) {
   const v = Number(n || 0);
   return 'Rs' + v.toLocaleString('en-IN', { maximumFractionDigits: 0 });
 }
-function parseINR(txt) {
-  return Number(String(txt).replace(/[^\d.-]/g, '')) || 0; // strips everything except digits, dot, minus
+function parseINR(str) {
+  // Make robust: handle "Rs", "₹", commas, spaces, NBSP, and minus sign
+  const s = (str ?? '').toString().replace(/−/g, '-'); // normalize unicode minus
+  const cleaned = s.replace(/[^\d-]/g, '');            // keep only digits and minus
+  return parseInt(cleaned || '0', 10);
 }
 
 function el(id) { return document.getElementById(id); }
@@ -30,6 +42,9 @@ function toast(msg, ms = 2000) {
   document.body.appendChild(t);
   setTimeout(() => t.remove(), ms);
 }
+// --- Global state for editing ---
+let editingId = null;
+
 
 /* ====== Amount in words ====== */
 function numToWords(n) {
@@ -149,56 +164,119 @@ function idbClear(store) {
   });
 }
 
-/* ====== PIN lock (local) ====== */
-async function sha256(str) {
-  const enc = new TextEncoder().encode(str);
-  const buf = await crypto.subtle.digest('SHA-256', enc);
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+/* ====== PIN lock ====== */
+// Legacy simple hash (kept for back-compat with older saved PINs)
+function legacyPinHash(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+  }
+  return hash.toString(16);
 }
+// Proper SHA-256 (hex). Falls back to legacy if subtle not available.
+async function sha256Hex(str) {
+  if (crypto?.subtle && window.TextEncoder) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+  return legacyPinHash(str);
+}
+
 async function showPinLock() {
-  const pinOverlay = el('pinOverlay');
-  const pinInput = el('pinInput');
-  const pinSubmit = el('pinSubmit'); // ✅ Unlock button
-  const pinReset = el('pinReset');
-  const pinError = el('pinError');
-  const saved = await idbGet('settings', 'pinHash');
+  return new Promise(async (resolve) => {
+    const pinOverlay = el('pinOverlay');
+    const pinInput = el('pinInput');
+    const pinSubmit = el('pinSubmit');
+    const pinReset = el('pinReset');
+    const pinError = el('pinError');
 
-  const isSetup = !!saved?.value;
-  el('pinSubheading').textContent = isSetup ? 'This keeps data private on this device.' : 'Create a 4-digit PIN for this device.';
+    // Clear any existing listeners by cloning
+    const newPinSubmit = pinSubmit.cloneNode(true);
+    const newPinReset = pinReset.cloneNode(true);
+    pinSubmit.replaceWith(newPinSubmit);
+    pinReset.replaceWith(newPinReset);
 
-  pinOverlay.classList.remove('hidden');
-  el('app').classList.add('hidden');
-
-  pinReset.addEventListener('click', async () => {
-    if (!confirm('This will erase all app data on this device. Continue?')) return;
-    indexedDB.deleteDatabase('simple-accounting');
-    localStorage.clear();
-    location.reload();
-  });
-
-  pinSubmit.addEventListener('click', async () => {
-    const val = pinInput.value.trim();
-    pinError.classList.add('hidden');
-    if (!/^\d{4}$/.test(val)) {
-      pinError.textContent = 'PIN must be 4 digits.';
+    let saved;
+    try {
+      saved = await idbGet('settings', 'pinHash');
+    } catch (e) {
+      console.error('IndexedDB error:', e);
+      pinError.textContent = 'Database error. Please reset PIN.';
       pinError.classList.remove('hidden');
       return;
     }
-    const hash = await sha256(val);
-    if (isSetup) {
-      if (hash === saved?.value) {
-        pinOverlay.classList.add('hidden');
-        el('app').classList.remove('hidden');
-      } else {
-        pinError.textContent = 'Incorrect PIN.';
+
+    const isSetup = !!saved?.value;
+    el('pinSubheading').textContent = isSetup
+      ? 'This keeps data private on this device.'
+      : 'Create a 4-digit PIN for this device.';
+
+    pinOverlay.classList.remove('hidden');
+    el('app').classList.add('hidden');
+
+    newPinReset.addEventListener('click', async () => {
+      if (!confirm('This will erase all app data on this device. Continue?')) return;
+      try {
+        await indexedDB.deleteDatabase('simple-accounting');
+        localStorage.clear();
+        location.reload();
+      } catch (e) {
+        console.error('Failed to reset data:', e);
+        pinError.textContent = 'Failed to reset. Try again.';
         pinError.classList.remove('hidden');
       }
-    } else {
-      await idbSet('settings', { key: 'pinHash', value: hash });
-      pinOverlay.classList.add('hidden');
-      el('app').classList.remove('hidden');
-      toast('PIN set. Keep it safe.');
-    }
+    });
+
+    const tryUnlock = async () => {
+      const val = pinInput.value.trim();
+      pinError.classList.add('hidden');
+      if (!/^\d{4}$/.test(val)) {
+        pinError.textContent = 'PIN must be 4 digits.';
+        pinError.classList.remove('hidden');
+        return;
+      }
+      try {
+        if (isSetup) {
+          // Back-compat acceptance: either legacy or new SHA-256 hex
+          const candSha = await sha256Hex(val);
+          const candLegacy = legacyPinHash(val);
+          const savedHash = saved?.value;
+          const savedAlg = saved?.alg; // may be undefined in older data
+
+          const ok = (savedAlg === 'sha256-hex')
+            ? (candSha === savedHash)
+            : (candSha === savedHash || candLegacy === savedHash);
+
+          if (ok) {
+            pinOverlay.classList.add('hidden');
+            el('app').classList.remove('hidden');
+            pinInput.value = '';
+            resolve(true);
+          } else {
+            pinError.textContent = 'Incorrect PIN.';
+            pinError.classList.remove('hidden');
+          }
+        } else {
+          // First-time setup → store strong hash
+          const hash = await sha256Hex(val);
+          await idbSet('settings', { key: 'pinHash', value: hash, alg: 'sha256-hex' });
+          pinOverlay.classList.add('hidden');
+          el('app').classList.remove('hidden');
+          pinInput.value = '';
+          toast('PIN set. Keep it safe.');
+          resolve(true);
+        }
+      } catch (e) {
+        console.error('PIN processing error:', e);
+        pinError.textContent = 'Error processing PIN. Try again.';
+        pinError.classList.remove('hidden');
+      }
+    };
+
+    newPinSubmit.addEventListener('click', tryUnlock);
+    pinInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') tryUnlock();
+    });
   });
 }
 
@@ -216,7 +294,8 @@ async function showPinLock() {
 
   el('saveEntry').addEventListener('click', saveEntry);
   el('clearForm').addEventListener('click', clearForm);
-    // ERASE ALL DATA BUTTON
+
+  // ERASE ALL DATA BUTTON
   el('wipeAll')?.addEventListener('click', async () => {
     const pwd = prompt("Enter password to erase ALL data:");
     if (pwd !== "@Faruk123") {
@@ -231,8 +310,10 @@ async function showPinLock() {
     toast("🗑️ All accounting data erased.");
   });
 
-
   el('reportDate').addEventListener('change', loadDayEntries);
+
+
+  
   el('loadDay').addEventListener('click', loadDayEntries);
 
   let exportMode = "pdf";
@@ -247,6 +328,13 @@ async function showPinLock() {
     el('denomModal').classList.remove('hidden');
   });
 
+  // --- Simple PDF export (no denomination) ---
+el('exportSimplePDF').addEventListener('click', async () => {
+  const date = el('reportDate').value || istDateKey();
+  await exportSimplePDF(date);
+});
+
+
   el('btnExcel').addEventListener('click', async () => {
     exportMode = "excel";
     el('confirmDenom').textContent = "Generate Excel";
@@ -259,72 +347,112 @@ async function showPinLock() {
   });
 
   el('confirmDenom').addEventListener('click', async () => {
-  const denomTotal = updateDenoms();
-  const balance = parseINR(el('denomModalBalance').textContent);
+    const denomTotal = updateDenoms();
+    const balance = parseINR(el('denomModalBalance').textContent);
 
-
-  if (denomTotal !== balance) {
-    el('reportDenomMatch').textContent = `❌ Denomination does not match balance. Still exporting...`;
-    el('reportDenomMatch').className = "text-red-600 mt-1 text-sm";
-    try {
-      const diff = denomTotal - balance;
-      const now = nowIST();
-      const adj = {
-  id: crypto.randomUUID(),
-  dateKey: istDateKey(now),
-  createdAt: now.toISOString(),
-  type: 'adjustment',
-  amount: diff,
-  note: diff > 0 ? 'Excess money detected (denomination mismatch)' : 'Shortage detected (denomination mismatch)',
-  meta: { source: 'denomCheck' }
-};
-
-      await idbSet('transactions', adj);
-      if ((el('reportDate').value || istDateKey()) === adj.dateKey) {
-        await loadDayEntries();
+    if (denomTotal !== balance) {
+      el('reportDenomMatch').textContent = `❌ Denomination does not match balance. Still exporting...`;
+      el('reportDenomMatch').className = "text-red-600 mt-1 text-sm";
+      try {
+        const diff = denomTotal - balance;
+        const now = nowIST();
+        const adj = {
+          id: uuid(),
+          dateKey: istDateKey(now),
+          createdAt: now.toISOString(),
+          type: 'adjustment',
+          amount: diff,
+          note: diff > 0 ? 'Excess money detected (denomination mismatch)' : 'Shortage detected (denomination mismatch)',
+          meta: { source: 'denomCheck' }
+        };
+        await idbSet('transactions', adj);
+        if ((el('reportDate').value || istDateKey()) === adj.dateKey) {
+          await loadDayEntries();
+        }
+        await refreshTotals();
+        toast('⚖️ Adjustment recorded');
+      } catch (e) {
+        console.error('Failed to record adjustment', e);
       }
-      await refreshTotals();
-      toast('⚖️ Adjustment recorded');
-    } catch (e) {
-      console.error('Failed to record adjustment', e);
-    }
-  } else {
-    el('reportDenomMatch').textContent = "✅ Denomination matches balance.";
-    el('reportDenomMatch').className = "text-green-600 mt-1 text-sm";
-  }
-
-  // Always export after check
-  setTimeout(async () => {
-    el('denomModal').classList.add('hidden');
-    const date = el('reportDate').value || istDateKey();
-    if (exportMode === "pdf") {
-      await exportPDF(date);
     } else {
-      await exportExcel(date);
+      el('reportDenomMatch').textContent = "✅ Denomination matches balance.";
+      el('reportDenomMatch').className = "text-green-600 mt-1 text-sm";
     }
-  }, 600);
-});
 
+    // Always export after check
+    setTimeout(async () => {
+      el('denomModal').classList.add('hidden');
+      const date = el('reportDate').value || istDateKey();
+      if (exportMode === "pdf") {
+        await exportPDF(date);
+      } else {
+        await exportExcel(date);
+      }
+    }, 600);
+  });
 
   el('cancelDenom').addEventListener('click', () => el('denomModal').classList.add('hidden'));
 
   await showPinLock();
   await refreshTotals();
+  await ensureTodayOpeningBalance();
   await loadDayEntries();
+    // --- Auto shift closing → opening at midnight ---
+  let currentDay = istDateKey();
 
-   // ✅ Step 2: Handle correction checkbox (show open adjustments only)
-el('txCorrection').addEventListener('change', async (e) => {
-  const dropdown = el('txCorrectionAdjust');
-  if (e.target.checked) {
-    await refreshCorrectionDropdown();
-    dropdown.classList.remove('hidden');
-  } else {
-    dropdown.classList.add('hidden');
-    dropdown.innerHTML = '';
-  }
-});
+  // Check every minute
+  setInterval(async () => {
+    const today = istDateKey();
+    if (today !== currentDay) {
+      currentDay = today;
+      await ensureTodayOpeningBalance();
+      await refreshTotals();
+      await loadDayEntries();
+      toast("🌙 New day started — Opening Balance created automatically.");
+    }
+  }, 60 * 1000); // check every 1 minute
 
+
+  // ✅ Handle correction checkbox (show open adjustments only)
+  el('txCorrection').addEventListener('change', async (e) => {
+    const dropdown = el('txCorrectionAdjust');
+    if (e.target.checked) {
+      await refreshCorrectionDropdown();
+      dropdown.classList.remove('hidden');
+    } else {
+      dropdown.classList.add('hidden');
+      dropdown.innerHTML = '';
+    }
+  });
 })();
+
+  // --- Auto set type + note when correction selected ---
+  el('txCorrectionAdjust').addEventListener('change', (e) => {
+    const selected = e.target.selectedOptions[0];
+    if (!selected) return;
+
+    const kind = selected.dataset.kind;
+    const amount = selected.dataset.amount;
+    const date = istDisplayDate(selected.dataset.date);
+
+    if (kind === "Shortage") {
+      el('txType').value = "income";    // shortage resolved by adding
+      el('txType').disabled = true;     // lock dropdown
+      el('txNote').value = `Correction: Shortage of ${rupeesForPDF(amount)} from ${date} resolved`;
+    } else if (kind === "Excess") {
+      el('txType').value = "expense";   // excess resolved by subtracting
+      el('txType').disabled = true;
+      el('txNote').value = `Correction: Excess of ${rupeesForPDF(amount)} from ${date} resolved`;
+    }
+  });
+
+  // When correction box unticked → unlock fields
+  el('txCorrection').addEventListener('change', (e) => {
+    if (!e.target.checked) {
+      el('txType').disabled = false;
+      el('txNote').value = ""; // clear auto note
+    }
+  });
 
 /* ====== Adjustment helpers (open balance) ====== */
 async function getOpenAdjustments() {
@@ -362,19 +490,20 @@ async function refreshCorrectionDropdown() {
     dropdown.innerHTML = '<option>No open adjustments</option>';
     return;
   }
-  openList.forEach(a => {
+    openList.forEach(a => {
     const opt = document.createElement('option');
     opt.value = a.id;
     const kind = a.openAmount > 0 ? 'Excess' : 'Shortage';
-    // show OPEN amount, not original
-    opt.textContent = `${istDisplayDate(a.dateKey)} → ${kind} ${rupeesForPDF(Math.abs(a.openAmount))} (open)`;
+    opt.textContent = `${istDisplayDate(a.dateKey)} → ${kind} ${rupeesForPDF(Math.abs(a.openAmount))}`;
+    opt.dataset.kind = kind;        // NEW → save type (Excess/Shortage)
+    opt.dataset.amount = Math.abs(a.openAmount); // NEW → save amount
+    opt.dataset.date = a.dateKey;   // NEW → save original date
     dropdown.appendChild(opt);
   });
+
 }
 
-
 /* ====== Entry form ====== */
-
 function clearForm() {
   // reset inputs
   el('txType').value = 'income';
@@ -389,7 +518,6 @@ function clearForm() {
   dd.innerHTML = '';
 }
 
-
 async function saveEntry() {
   try {
     const type = el('txType').value;
@@ -401,6 +529,30 @@ async function saveEntry() {
     }
 
     const now = nowIST();
+
+    // --- If editing existing entry ---
+if (editingId) {
+  const oldTx = await idbGet("transactions", editingId);
+  const newTx = { ...oldTx, type, amount, note };
+  await idbSet("transactions", newTx);
+
+  // Log edit
+  await idbSet("edits", {
+    id: uuid(),
+    transactionId: editingId,
+    oldValues: { type: oldTx.type, amount: oldTx.amount, note: oldTx.note },
+    newValues: { type, amount, note },
+    editedAt: now.toISOString()
+  });
+
+  editingId = null;
+  clearForm();
+  await refreshTotals();
+  await loadDayEntries();
+  toast("✅ Transaction updated.");
+  return; // stop here
+}
+
 
     if (el('txCorrection').checked) {
       // --- Correction flow: create ONLY the adjustment reversal entry
@@ -415,7 +567,7 @@ async function saveEntry() {
           const reverseSigned = open > 0 ? -reverseAbs : +reverseAbs; // cancel the open
 
           const correction = {
-            id: crypto.randomUUID(),
+            id: uuid(),
             dateKey: istDateKey(now),
             createdAt: now.toISOString(),
             type: "adjustment",
@@ -436,7 +588,7 @@ async function saveEntry() {
     } else {
       // --- Normal income / expense entry
       const data = {
-        id: crypto.randomUUID(),
+        id: uuid(),
         dateKey: istDateKey(now),
         createdAt: now.toISOString(),
         type,
@@ -456,31 +608,64 @@ async function saveEntry() {
     if (el('txCorrection').checked) {
       await refreshCorrectionDropdown();
     }
-
   } catch (err) {
     console.error('Save failed:', err);
     alert('Save failed. Please try again.');
   }
 }
 
-
-
-
 /* ====== Totals ====== */
-async function refreshTotals() {
+async function ensureTodayOpeningBalance() {
+  const today = istDateKey();
+  const all = await idbGetAll("transactions");
+
+  // If today's opening already exists, do nothing
+  if (all.some(t => t.dateKey === today && t.meta?.isOpening)) return;
+
+  // Look at yesterday’s closing
+  const yesterday = dayjs(today).subtract(1, "day").format("YYYY-MM-DD");
+  const yList = all.filter(t => t.dateKey === yesterday);
+
+  let openingAmt = 0;
+  if (yList.length) {
+    const totals = { income: 0, expense: 0, adjustment: 0 };
+    yList.forEach(r => {
+      if (r.type === "income") totals.income += r.amount;
+      if (r.type === "expense") totals.expense += r.amount;
+      if (r.type === "adjustment") totals.adjustment += r.amount;
+    });
+    openingAmt = totals.income - totals.expense + totals.adjustment;
+  }
+
+  // Create today’s opening
+  const now = nowIST();
+  const openingEntry = {
+    id: uuid(),
+    dateKey: today,
+    createdAt: now.toISOString(),
+    type: "income", // looks like income
+    amount: openingAmt,
+    note: "Opening Balance",
+    meta: { isOpening: true }
+  };
+  await idbSet("transactions", openingEntry);
+}
+
+async function refreshTotals(forDate) {
+  const dateKey = forDate || (el('reportDate')?.value || istDateKey());
   const all = await idbGetAll('transactions');
-  const inc = all.filter(t => t.type === 'income').reduce((a, b) => a + b.amount, 0);
-  const exp = all.filter(t => t.type === 'expense').reduce((a, b) => a + b.amount, 0);
-  const adj = all.filter(t => t.type === 'adjustment').reduce((a, b) => a + b.amount, 0);
+  const day = all.filter(t => t.dateKey === dateKey);
+
+  const inc = day.filter(t => t.type === 'income').reduce((a, b) => a + b.amount, 0);
+  const exp = day.filter(t => t.type === 'expense').reduce((a, b) => a + b.amount, 0);
+  const adj = day.filter(t => t.type === 'adjustment').reduce((a, b) => a + b.amount, 0);
 
   const balance = inc - exp + adj;
 
-  // Update main cards
-  el('totalIncome').textContent = rupeesForPDF(inc);
+  el('totalIncome').textContent  = rupeesForPDF(inc);
   el('totalExpense').textContent = rupeesForPDF(exp);
   el('currentBalance').textContent = rupeesForPDF(balance);
 
-  // Update Adjustment card
   const adjEl = el('adjustmentCard');
   if (adjEl) {
     if (adj > 0) {
@@ -496,87 +681,133 @@ async function refreshTotals() {
   }
 }
 
-
-
-/* ====== Load Entries ====== */
+/* ====== Load Entries (missing earlier — now added) ====== */
 async function loadDayEntries() {
   const date = el('reportDate').value || istDateKey();
-  const list = await idbGetAll('transactions');
-  const filtered = list
-    .filter(t => t.dateKey === date)
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const { list } = await getDayData(date);
+  renderList(list);
+  await refreshTotals(date);
 
-  renderList(filtered);
-
-  // If correction mode is on, keep its dropdown fresh
-  if (el('txCorrection').checked) {
-    await refreshCorrectionDropdown();
+  // Show count of open adjustments as "mismatches"
+  try {
+    const openList = await getOpenAdjustments();
+    el('mismatchBadge').textContent = `Mismatches: ${openList.length}`;
+  } catch {
+    // ignore badge update errors
   }
 }
 
-function renderList(arr) {
-  const tbody = el('listTbody');
-  tbody.innerHTML = '';
-  arr.forEach(tx => {
-    const tr = document.createElement('tr');
+/* ====== Render List ====== */
+function renderList(entries) {
+  const tbody = el("listTbody");
+  tbody.innerHTML = "";
+  entries.forEach(tx => {
+    const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td>${istDisplayTime(tx.createdAt)}</td>
-      <td>${tx.type === 'income' ? 'Income 💰' : (tx.type === 'expense' ? 'Expense 💸' : 'Adjustment ⚖️')}</td>
-      <td>${rupeesForPDF(tx.amount)}</td>
-      <td>${tx.note || '-'}</td>
-      <td>
-        <button data-id="${tx.id}" class="editEntry bg-blue-600 text-white px-2 py-1 rounded-md text-xs hover:bg-blue-700">Edit</button>
-        <button data-id="${tx.id}" class="deleteEntry bg-rose-600 text-white px-2 py-1 rounded-md text-xs hover:bg-rose-700">Delete</button>
+      <td class="py-1">${tx.meta?.isOpening ? "--" : istDisplayTime(tx.createdAt)}</td>
+      <td class="py-1">
+        ${tx.type === "income" ? "💰 Income" : tx.type === "expense" ? "💸 Expense" : "⚖️ Adjustment"}
+      </td>
+      <td class="py-1">${rupeesForPDF(tx.amount)}</td>
+      <td class="py-1">${tx.note || ""}</td>
+      <td class="py-1 text-center">
+        <button class="editBtn px-2 py-1 bg-blue-500 text-white rounded-md text-xs mr-1" data-id="${tx.id}">✏️</button>
+        <button class="deleteBtn px-2 py-1 bg-red-500 text-white rounded-md text-xs" data-id="${tx.id}">🗑️</button>
       </td>
     `;
     tbody.appendChild(tr);
   });
-
-  tbody.querySelectorAll('button.deleteEntry').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const pass = prompt("Enter password to delete:");
-      if (pass !== "@Faruk123") {
-        toast("❌ Incorrect password. Cannot delete.", 4000);
-        return;
-      }
-      if (confirm('Are you sure you want to delete this entry?')) {
-        await idbDelete('transactions', btn.dataset.id);
-        loadDayEntries();
-        refreshTotals();
-        toast("🗑️ Deleted");
-      }
-    });
-  });
-
-  tbody.querySelectorAll('button.editEntry').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const id = btn.dataset.id;
-      const list = await idbGetAll('transactions');
-      const tx = list.find(x => x.id === id);
-      if (!tx) return;
-      const amount = prompt('Edit amount (₹):', tx.amount);
-      if (amount === null) return;
-      const amt = Number(amount || 0);
-      if (!Number.isFinite(amt) || amt <= 0) { alert('Invalid amount'); return; }
-      const note = prompt('Edit note:', tx.note || '') ?? tx.note;
-      const oldData = { amount: tx.amount, note: tx.note };
-      tx.amount = amt;
-      tx.note = (note || '').trim();
-      await idbSet('edits', {
-        id: crypto.randomUUID(),
-        txId: tx.id,
-        dateKey: tx.dateKey,
-        time: nowIST().toISOString(),
-        old: oldData,
-        new: { amount: tx.amount, note: tx.note }
-      });
-      await idbSet('transactions', tx);
-      loadDayEntries();
-      refreshTotals();
-      toast("✅ Entry updated");
-    });
-  });
 }
+
+// === Handle Edit / Delete button clicks (single listener) ===
+document.addEventListener("click", async (e) => {
+  const target = e.target;
+
+  // Delete flow
+  if (target.classList.contains("deleteBtn")) {
+    const id = target.dataset.id;
+    const pwd = prompt("Enter password to delete:");
+    if (pwd !== "@Faruk123") {
+      alert("❌ Incorrect password. Transaction not deleted.");
+      return;
+    }
+    try {
+      await idbDelete("transactions", id);
+      await loadDayEntries();
+      await refreshTotals();
+      toast("🗑️ Transaction deleted.");
+    } catch (err) {
+      console.error("Delete failed:", err);
+      alert("Failed to delete. Check console.");
+    }
+    return;
+  }
+
+  // Edit flow (prompt-based)
+  if (target.classList.contains("editBtn")) {
+    const id = target.dataset.id;
+    const tx = await idbGet("transactions", id);
+    if (!tx) {
+      alert("Transaction not found.");
+      return;
+    }
+
+    // Disallow editing for opening balance / adjustments / corrections
+    if (tx.meta?.isOpening) {
+      alert("Opening balance cannot be edited.");
+      return;
+    }
+    if (tx.type !== "income" && tx.type !== "expense") {
+      alert("Only income/expense entries can be edited. Adjustments/corrections are not editable.");
+      return;
+    }
+
+    // Only allow editing of today's entries
+    const today = istDateKey();
+    const txDate = dayjs(tx.createdAt).tz(IST_TZ).format("YYYY-MM-DD");
+    if (today !== txDate) {
+      alert("You can only edit today's entries.");
+      return;
+    }
+
+    // Prompts: get new amount and note (if canceled, do nothing)
+    const newAmountStr = prompt("Enter new amount (₹):", tx.amount);
+    if (newAmountStr === null) return;
+    const newAmount = Number(newAmountStr);
+    if (isNaN(newAmount) || newAmount <= 0) {
+      alert("Invalid amount.");
+      return;
+    }
+
+    const newNote = prompt("Enter new note:", tx.note || "") || "";
+
+    try {
+      // Update only amount and note (preserve dateKey, createdAt, type, meta, id)
+      const newTx = { ...tx, amount: newAmount, note: newNote };
+      await idbSet("transactions", newTx);
+
+    
+      // Log the edit
+await idbSet("edits", {
+  id: uuid(),
+  transactionId: id,
+  txDateKey: tx.dateKey,   // 🔥 link edit to the transaction’s original day
+  oldValues: { type: tx.type, amount: tx.amount, note: tx.note },
+  newValues: { type: tx.type, amount: newAmount, note: newNote },
+  editedAt: nowIST().toISOString()
+});
+
+
+      await loadDayEntries();
+      await refreshTotals();
+      toast("✅ Transaction updated.");
+    } catch (err) {
+      console.error("Edit failed:", err);
+      alert("Failed to update transaction. See console.");
+    }
+  }
+});
+
 
 /* ====== Report Data ====== */
 async function getDayData(dateKey) {
@@ -592,6 +823,7 @@ async function getDayData(dateKey) {
   totals.balance = totals.income - totals.expense + totals.adjustment;
   return { list, totals };
 }
+
 /* ====== Denominations Helpers ====== */
 function loadDefaultDenoms() {
   const denoms = [500, 200, 100, 50, 20, 10, 5, 2, 1];  // No ₹2000
@@ -614,6 +846,8 @@ function loadDefaultDenoms() {
 
 function updateDenoms() {
   let total = 0;
+
+  // Calculate denomination total
   document.querySelectorAll('#reportDenomTbody tr').forEach(r => {
     const v = Number(r.querySelector('input').dataset.val);
     const c = Number(r.querySelector('input').value || 0);
@@ -621,11 +855,14 @@ function updateDenoms() {
     r.querySelector('.denomSubtotal').textContent = rupeesForPDF(sub);
     total += sub;
   });
+
   el('reportDenomTotal').textContent = rupeesForPDF(total);
 
-  // Compare with balance and show +/- (modal display only)
-  const balance = parseINR(el('denomModalBalance').textContent);
+  // ✅ Always read latest balance from modal text
+  const balanceStr = el('denomModalBalance').textContent || "0";
+  const balance = parseINR(balanceStr);
 
+  // Compare denomination total vs balance
   const diff = total - balance;
 
   if (diff === 0) {
@@ -642,10 +879,7 @@ function updateDenoms() {
   return total;
 }
 
-/* ====== Export PDF ====== */
-// (keeping your corporate PDF export unchanged)
-/* ====== Export PDF (Corporate Style) ====== */
-/* ====== Export PDF (Corporate Style) ====== */
+/* ====== Export PDF (Corporate Style with dinomination) ====== */
 async function exportPDF(dateKey) {
   const { list, totals } = await getDayData(dateKey);
   const rows = list;
@@ -671,13 +905,13 @@ async function exportPDF(dateKey) {
   if (incomes.length) {
     doc.setFont("helvetica", "bold");
     doc.setFontSize(13);
-    doc.text("Cash Deposit", 14, y);
+    doc.text("Income Entries", 14, y);
     y += 8;
 
     doc.autoTable({
       head: [["Time", "Amount", "Note"]],
       body: incomes.map(r => [
-        istDisplayTime(r.createdAt),
+        r.meta?.isOpening ? "--" : istDisplayTime(r.createdAt),
         rupeesForPDF(r.amount),
         r.note || ""
       ]),
@@ -723,9 +957,7 @@ async function exportPDF(dateKey) {
     ["Excess / Shortage",
       (totals.adjustment >= 0 ? "+" : "- ") + rupeesForPDF(Math.abs(totals.adjustment))]
   ];
-  
-    
-  
+
   doc.autoTable({
     head: [["Category", "Amount"]],
     body: summaryRows,
@@ -737,37 +969,41 @@ async function exportPDF(dateKey) {
   y = doc.lastAutoTable.finalY + 15;
 
   // --- Resolved Adjustments ---
-const resolved = rows.filter(r => r.type === "adjustment" && r.meta?.reversedAdjId);
-if (resolved.length) {
-  y = doc.lastAutoTable ? doc.lastAutoTable.finalY + 15 : y + 15;
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(13);
-  doc.text("Resolved Adjustments", 14, y);
-  y += 8;
+  const resolved = rows.filter(r => r.type === "adjustment" && r.meta?.reversedAdjId);
+  if (resolved.length) {
+    y = doc.lastAutoTable ? doc.lastAutoTable.finalY + 15 : y + 15;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.text("Resolved Adjustments", 14, y);
+    y += 8;
 
-  doc.autoTable({
-    head: [["Original Date", "Resolved Amount", "Covered By", "Note"]],
-    body: resolved.map(r => [
-      istDisplayDate(r.meta.reversedFrom),
-      rupeesForPDF(Math.abs(r.amount)),
-      r.meta.coveredBy,
-      r.note || ""
-    ]),
-    startY: y,
-    theme: "grid",
-    headStyles: { fillColor: [0, 80, 150] }
-  });
-  y = doc.lastAutoTable.finalY + 15;
-}
-
+    doc.autoTable({
+      head: [["Original Date", "Resolved Amount", "Covered By", "Note"]],
+      body: resolved.map(r => [
+        istDisplayDate(r.meta.reversedFrom),
+        rupeesForPDF(Math.abs(r.amount)),
+        r.meta.coveredBy,
+        r.note || ""
+      ]),
+      startY: y,
+      theme: "grid",
+      headStyles: { fillColor: [0, 80, 150] }
+    });
+    y = doc.lastAutoTable.finalY + 15;
+  }
 
   // --- Denominations ---
   const denomRows = [];
+  let denomTotal = 0;
   document.querySelectorAll("#reportDenomTbody tr").forEach(r => {
     const inp = r.querySelector("input");
     const v = Number(inp?.dataset?.val || 0);
     const c = Number(inp?.value || 0);
-    if (c > 0) denomRows.push([`${v}`, c, rupeesForPDF(v * c)]);
+    if (c > 0) {
+      const sub = v * c;
+      denomRows.push([`${v}`, c, rupeesForPDF(sub)]);
+      denomTotal += sub;
+    }
   });
 
   if (denomRows.length) {
@@ -785,83 +1021,369 @@ if (resolved.length) {
     });
     y = doc.lastAutoTable.finalY + 15;
 
-    const denomTotal = denomRows.reduce((a, [, , sub]) => a + parseINR(sub), 0);
-
-
     doc.setFont("helvetica", "normal");
     doc.setFontSize(11);
     doc.text(`Denomination Total: ${rupeesForPDF(denomTotal)}`, 14, y);
     y += 8;
   }
 
-// --- Denomination Match Status ---
-const denomTotal = Array.from(document.querySelectorAll("#reportDenomTbody tr")).reduce((sum, r) => {
-  const inp = r.querySelector("input");
-  const v = Number(inp?.dataset?.val || 0);
-  const c = Number(inp?.value || 0);
-  return sum + (v * c);
-}, 0);
+  // --- Denomination Match Status ---
+  const balanceStr = el('denomModalBalance').textContent || "0";
+  const balance = parseINR(balanceStr);   // ✅ use modal balance instead of totals.balance
+  const diff = denomTotal - balance;
 
-const balance = parseINR(el('denomModalBalance').textContent);
-
-const diff = denomTotal - balance;
-
-doc.setFont("helvetica", "bold");
-doc.setFontSize(12);
-if (diff === 0) {
-  doc.text(" Denomination matched with balance.", 14, y);
-} else if (diff > 0) {
-  doc.text(` Denomination shows EXCESS of ${rupeesForPDF(diff)}`, 14, y);
-} else {
-  doc.text(` Denomination shows SHORTAGE of ${rupeesForPDF(Math.abs(diff))}`, 14, y);
-}
-y += 12;
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(12);
+  if (diff === 0) {
+    doc.text(" Denomination matched with balance.", 14, y);
+  } else if (diff > 0) {
+    doc.text(` Denomination shows EXCESS of ${rupeesForPDF(diff)}`, 14, y);
+  } else {
+    doc.text(` Denomination shows SHORTAGE of ${rupeesForPDF(Math.abs(diff))}`, 14, y);
+  }
+  y += 12;
 
 
+    // --- Edits Section ---
+  const allEdits = await idbGetAll("edits");
+const dayEdits = allEdits.filter(e => e.txDateKey === dateKey);
+
+  if (dayEdits.length) {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.text("Edits", 14, y);
+    y += 8;
+
+    doc.autoTable({
+      head: [["Time", "Old Entry", "New Entry"]],
+      body: dayEdits.map(e => {
+        const t = dayjs(e.editedAt).tz(IST_TZ).format("HH:mm");
+        const oldStr = `${e.oldValues.type} ${rupeesForPDF(e.oldValues.amount)}\n"${e.oldValues.note || ""}"`;
+        const newStr = `${e.newValues.type} ${rupeesForPDF(e.newValues.amount)}\n"${e.newValues.note || ""}"`;
+        return [t, oldStr, newStr];
+      }),
+      startY: y,
+      theme: "grid",
+      headStyles: { fillColor: [80, 0, 80] },
+      styles: { fontSize: 10, cellWidth: "wrap" },
+      columnStyles: {
+        0: { cellWidth: 25 }, // Time
+        1: { cellWidth: 75 }, // Old
+        2: { cellWidth: 75 }  // New
+      }
+    });
+    y = doc.lastAutoTable.finalY + 15;
+  }
+
+  
   // --- Footer ---
   doc.setFontSize(9);
   doc.setTextColor(100);
   doc.text("This is a system generated report. No manual alterations.", 105, 290, { align: "center" });
 
+
+
   doc.save(`report-${dateKey}.pdf`);
   toast("📄 Corporate PDF exported.");
 }
+// Export pdf without dinomination
+// Export PDF without denomination
+async function exportSimplePDF(dateKey) {
+  const { list, totals } = await getDayData(dateKey);
+  const rows = list;
 
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
 
-/* ====== Export Excel ====== */
+  // --- Header ---
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(16);
+  doc.text("Daily Cash Report", 105, 20, { align: "center" });
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(11);
+  doc.text(`Date: ${istDisplayDate(dateKey)}`, 14, 32);
+  const genTime = dayjs().tz(IST_TZ).format("DD-MM-YYYY hh:mm A");
+  doc.text(`Generated on: ${genTime}`, 14, 39);
+
+  let y = 50;
+
+  // --- Income ---
+  const incomes = rows.filter(r => r.type === "income");
+  if (incomes.length) {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.text("Income Entries", 14, y);
+    y += 8;
+
+    doc.autoTable({
+      head: [["Time", "Amount", "Note"]],
+      body: incomes.map(r => [
+        r.meta?.isOpening ? "--" : istDisplayTime(r.createdAt),
+        rupeesForPDF(r.amount),
+        r.note || ""
+      ]),
+      startY: y,
+      theme: "grid",
+      headStyles: { fillColor: [0, 100, 0] },
+    });
+    y = doc.lastAutoTable.finalY + 15;
+  }
+
+  // --- Expense ---
+  const expenses = rows.filter(r => r.type === "expense");
+  if (expenses.length) {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.text("Expense Entries", 14, y);
+    y += 8;
+
+    doc.autoTable({
+      head: [["Time", "Amount", "Note"]],
+      body: expenses.map(r => [
+        istDisplayTime(r.createdAt),
+        rupeesForPDF(r.amount),
+        r.note || ""
+      ]),
+      startY: y,
+      theme: "grid",
+      headStyles: { fillColor: [139, 0, 0] },
+    });
+    y = doc.lastAutoTable.finalY + 15;
+  }
+
+  // --- Summary ---
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(13);
+  doc.text("Summary", 14, y);
+  y += 8;
+
+  const summaryRows = [
+    ["Total Cash Deposit", rupeesForPDF(totals.income)],
+    ["Total Expense", rupeesForPDF(totals.expense)],
+    ["Closing Amount", rupeesForPDF(totals.balance)],
+    ["Excess / Shortage",
+      (totals.adjustment >= 0 ? "+" : "- ") + rupeesForPDF(Math.abs(totals.adjustment))]
+  ];
+
+  doc.autoTable({
+    head: [["Category", "Amount"]],
+    body: summaryRows,
+    startY: y,
+    theme: "grid",
+    headStyles: { fillColor: [0, 0, 120] },
+    styles: { fontStyle: "bold" }
+  });
+  y = doc.lastAutoTable.finalY + 15;
+
+  // --- Resolved Adjustments ---
+  const resolved = rows.filter(r => r.type === "adjustment" && r.meta?.reversedAdjId);
+  if (resolved.length) {
+    y = doc.lastAutoTable ? doc.lastAutoTable.finalY + 15 : y + 15;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.text("Resolved Adjustments", 14, y);
+    y += 8;
+
+    doc.autoTable({
+      head: [["Original Date", "Resolved Amount", "Covered By", "Note"]],
+      body: resolved.map(r => [
+        istDisplayDate(r.meta.reversedFrom),
+        rupeesForPDF(Math.abs(r.amount)),
+        r.meta.coveredBy,
+        r.note || ""
+      ]),
+      startY: y,
+      theme: "grid",
+      headStyles: { fillColor: [0, 80, 150] }
+    });
+    y = doc.lastAutoTable.finalY + 15;
+  }
+
+  // --- Edits Section ---
+  const allEdits = await idbGetAll("edits");
+  const dayEdits = allEdits.filter(e => e.txDateKey === dateKey);
+
+  if (dayEdits.length) {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.text("Edits", 14, y);
+    y += 8;
+
+    doc.autoTable({
+      head: [["Time", "Old Entry", "New Entry"]],
+      body: dayEdits.map(e => {
+        const t = dayjs(e.editedAt).tz(IST_TZ).format("HH:mm");
+        const oldStr = `${e.oldValues.type} ${rupeesForPDF(e.oldValues.amount)}\n"${e.oldValues.note || ""}"`;
+        const newStr = `${e.newValues.type} ${rupeesForPDF(e.newValues.amount)}\n"${e.newValues.note || ""}"`;
+        return [t, oldStr, newStr];
+      }),
+      startY: y,
+      theme: "grid",
+      headStyles: { fillColor: [80, 0, 80] },
+      styles: { fontSize: 10, cellWidth: "wrap" },
+      columnStyles: {
+        0: { cellWidth: 25 }, // Time
+        1: { cellWidth: 75 }, // Old
+        2: { cellWidth: 75 }  // New
+      }
+    });
+    y = doc.lastAutoTable.finalY + 15;
+  }
+
+  // --- Footer ---
+  doc.setFontSize(9);
+  doc.setTextColor(100);
+  doc.text("This is a system generated report (no denomination section).", 105, 290, { align: "center" });
+
+  doc.save(`report-simple-${dateKey}.pdf`);
+  toast("📄 Simple PDF exported (no denomination).");
+}
+
+/* ====== Export Excel (Corporate Professional Style) ====== */
 async function exportExcel(dateKey) {
   const { list, totals } = await getDayData(dateKey);
   const wb = XLSX.utils.book_new();
-  const sheetData = [];
 
-  sheetData.push(["Simple Accounting Report"]);
-  sheetData.push(["Date:", istDisplayDate(dateKey)]);
-  sheetData.push([]);
+  const wsData = [];
 
-  sheetData.push(["Time", "Type", "Amount", "Note"]);
-  list.forEach(tx => {
-    sheetData.push([istDisplayTime(tx.createdAt), tx.type, tx.amount, tx.note || ""]);
-  });
+  // --- Title ---
+  wsData.push(["Daily Cash Report"]);
+  wsData.push([]);
+  wsData.push([`Date: ${istDisplayDate(dateKey)}`]);
+  wsData.push([`Generated on: ${dayjs().tz(IST_TZ).format("DD-MM-YYYY hh:mm A")}`]);
+  wsData.push([]);
 
-  sheetData.push([]);
-  sheetData.push(["Summary"]);
-  sheetData.push(["Total Income", totals.income]);
-  sheetData.push(["Total Expense", totals.expense]);
-  sheetData.push(["Adjustment", totals.adjustment]);
-  sheetData.push(["Closing Balance", totals.balance]);
+  // --- Income ---
+  const incomes = list.filter(r => r.type === "income");
+  if (incomes.length) {
+    wsData.push(["Income Entries"]);
+    wsData.push(["Time", "Amount", "Note"]);
+    incomes.forEach(r => {
+      wsData.push([
+        r.meta?.isOpening ? "--" : istDisplayTime(r.createdAt),
+        r.amount,
+        r.note || ""
+      ]);
+    });
+    wsData.push([]);
+  }
 
-  // ✅ Add denomination rows
-  sheetData.push([]);
-  sheetData.push(["Denominations"]);
-  sheetData.push(["Denomination", "Count", "Subtotal"]);
+  // --- Expense ---
+  const expenses = list.filter(r => r.type === "expense");
+  if (expenses.length) {
+    wsData.push(["Expense Entries"]);
+    wsData.push(["Time", "Amount", "Note"]);
+    expenses.forEach(r => {
+      wsData.push([
+        istDisplayTime(r.createdAt),
+        r.amount,
+        r.note || ""
+      ]);
+    });
+    wsData.push([]);
+  }
+
+  // --- Adjustments ---
+  const adjustments = list.filter(r => r.type === "adjustment");
+  if (adjustments.length) {
+    wsData.push(["Adjustments"]);
+    wsData.push(["Time", "Amount", "Note"]);
+    adjustments.forEach(r => {
+      wsData.push([
+        istDisplayTime(r.createdAt),
+        r.amount,
+        r.note || ""
+      ]);
+    });
+    wsData.push([]);
+  }
+
+  // --- Summary ---
+  wsData.push(["Summary"]);
+  wsData.push(["Total Income", totals.income]);
+  wsData.push(["Total Expense", totals.expense]);
+  wsData.push(["Adjustment", totals.adjustment]);
+  wsData.push(["Closing Balance", totals.balance]);
+  wsData.push([]);
+
+  // --- Denominations ---
+  wsData.push(["Denominations"]);
+  wsData.push(["Denomination", "Count", "Subtotal"]);
+  let denomTotalExcel = 0;
   document.querySelectorAll("#reportDenomTbody tr").forEach(r => {
     const inp = r.querySelector("input");
     const v = Number(inp?.dataset?.val || 0);
     const c = Number(inp?.value || 0);
-    if (c > 0) sheetData.push([v, c, v * c]);
+    if (c > 0) {
+      const sub = v * c;
+      denomTotalExcel += sub;
+      wsData.push([v, c, sub]);
+    }
   });
-  
-  const ws = XLSX.utils.aoa_to_sheet(sheetData);
+  wsData.push(["Total", "", denomTotalExcel]);
+
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+  // --- Corporate Styling (requires xlsx-style) ---
+  ws['!cols'] = [
+    { wch: 20 }, // Time / label
+    { wch: 18 }, // Amount
+    { wch: 40 }  // Notes
+  ];
+
+  // Helper: apply style
+  const setStyle = (cell, style) => {
+    if (ws[cell]) {
+      ws[cell].s = style;
+    }
+  };
+
+  // Title style
+  setStyle("A1", {
+    font: { bold: true, sz: 16, color: { rgb: "1F497D" } }, // corporate blue
+    alignment: { horizontal: "center" }
+  });
+
+  // Find and style section headers
+  Object.keys(ws).forEach(addr => {
+    const val = ws[addr]?.v;
+    if (["Income Entries", "Expense Entries", "Adjustments", "Summary", "Denominations"].includes(val)) {
+      ws[addr].s = {
+        font: { bold: true, sz: 13, color: { rgb: "FFFFFF" } },
+        fill: { fgColor: { rgb: "4F81BD" } }, // deep blue header
+        alignment: { horizontal: "left" }
+      };
+    }
+    // Table headers
+    if (["Time", "Amount", "Note", "Denomination", "Count", "Subtotal"].includes(val)) {
+      ws[addr].s = {
+        font: { bold: true, color: { rgb: "FFFFFF" } },
+        fill: { fgColor: { rgb: "1F497D" } },
+        alignment: { horizontal: "center" }
+      };
+    }
+  });
+
+  // Currency format for amounts
+  Object.keys(ws).forEach(addr => {
+    if (addr.startsWith("B") || addr.startsWith("C")) {
+      if (typeof ws[addr].v === "number") {
+        ws[addr].t = "n";
+        ws[addr].z = "₹#,##0"; // INR format
+        ws[addr].s = { alignment: { horizontal: "right" } };
+      }
+    }
+  });
+
+  // Footer
+  const lastRow = wsData.length + 2;
+  ws[`A${lastRow}`] = {
+    v: "This is a system generated report. No manual alterations.",
+    s: { font: { italic: true, color: { rgb: "808080" } } }
+  };
+
   XLSX.utils.book_append_sheet(wb, ws, "Report");
-  XLSX.writeFile(wb, `Report_${dateKey}.xlsx`);
+  XLSX.writeFile(wb, `report-${dateKey}.xlsx`);
+  toast("📊 Professional Excel exported.");
 }
