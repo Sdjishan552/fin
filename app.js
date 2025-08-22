@@ -122,6 +122,10 @@ function openDB() {
       if (!db.objectStoreNames.contains('edits')) {
         db.createObjectStore('edits', { keyPath: 'id' });
       }
+      if (!db.objectStoreNames.contains('denoms')) {
+        db.createObjectStore('denoms', { keyPath: 'dateKey' });
+      }
+
     };
     req.onsuccess = () => res(req.result);
     req.onerror = () => rej(req.error);
@@ -214,18 +218,86 @@ async function showPinLock() {
     pinOverlay.classList.remove('hidden');
     el('app').classList.add('hidden');
 
-    newPinReset.addEventListener('click', async () => {
-      if (!confirm('This will erase all app data on this device. Continue?')) return;
-      try {
-        await indexedDB.deleteDatabase('simple-accounting');
-        localStorage.clear();
-        location.reload();
-      } catch (e) {
-        console.error('Failed to reset data:', e);
-        pinError.textContent = 'Failed to reset. Try again.';
-        pinError.classList.remove('hidden');
-      }
-    });
+    // Replace the existing PIN reset event listener in your showPinLock function
+// Find this part in your code and replace it:
+
+newPinReset.addEventListener('click', async () => {
+  // Start the 4-step verification process
+  const passwords = ["Syed", "Golam", "Faruk", "Sgf"];
+  const prompts = [
+    "Enter Password 1:",
+    "Enter Password 2:", 
+    "Enter Password 3:",
+    "Enter Password 4:"
+  ];
+  
+  const userInputs = [];
+  
+  // Collect all 4 passwords first without checking
+  for (let i = 0; i < passwords.length; i++) {
+    const userInput = prompt(prompts[i]);
+    
+    // If user cancels any prompt, stop the process
+    if (userInput === null) {
+      return;
+    }
+    
+    userInputs.push(userInput);
+  }
+  
+  // Now check if all passwords are correct
+  let allCorrect = true;
+  for (let i = 0; i < passwords.length; i++) {
+    if (userInputs[i] !== passwords[i]) {
+      allCorrect = false;
+      break;
+    }
+  }
+  
+  // If any password is wrong, show generic error
+  if (!allCorrect) {
+    alert("❌ One or more passwords you entered is wrong. PIN reset cancelled.");
+    return;
+  }
+  
+  // If all 4 passwords are correct, proceed with PIN reset
+  if (allCorrect) {
+    // Ask for new PIN
+    const newPin = prompt("✅ All passwords verified!\nEnter new 4-digit PIN:");
+    
+    if (newPin === null) {
+      return; // User cancelled
+    }
+    
+    // Validate new PIN format
+    if (!/^\d{4}$/.test(newPin)) {
+      alert("❌ PIN must be exactly 4 digits.");
+      return;
+    }
+    
+    try {
+      // Generate new PIN hash using SHA-256
+      const newHash = await sha256Hex(newPin);
+      
+      // Save new PIN hash to database (without deleting any data)
+      await idbSet('settings', { 
+        key: 'pinHash', 
+        value: newHash, 
+        alg: 'sha256-hex' 
+      });
+      
+      alert("✅ PIN successfully reset!\nYou can now login with your new PIN.");
+      
+      // Clear the PIN input field
+      pinInput.value = '';
+      pinError.classList.add('hidden');
+      
+    } catch (e) {
+      console.error('Failed to reset PIN:', e);
+      alert("❌ Failed to reset PIN. Please try again.");
+    }
+  }
+});
 
     const tryUnlock = async () => {
       const val = pinInput.value.trim();
@@ -305,6 +377,7 @@ async function showPinLock() {
     const sure = confirm("⚠️ This will ERASE ALL transactions permanently. Continue?");
     if (!sure) return;
     await idbClear("transactions");
+    await idbClear("edits");   // 🔥 clear all edits too
     await refreshTotals();
     await loadDayEntries();
     toast("🗑️ All accounting data erased.");
@@ -317,16 +390,28 @@ async function showPinLock() {
   el('loadDay').addEventListener('click', loadDayEntries);
 
   let exportMode = "pdf";
-  el('btnPdf').addEventListener('click', async () => {
+el('btnPdf').addEventListener('click', async () => {
+  const date = el('reportDate').value || istDateKey();
+
+  if (date === istDateKey()) {
+    // ✅ Today → open denomination modal
     exportMode = "pdf";
     el('confirmDenom').textContent = "Generate PDF";
-    const date = el('reportDate').value || istDateKey();
     const { totals } = await getDayData(date);
     el('denomModalBalance').textContent = rupeesForPDF(totals.balance);
     loadDefaultDenoms();
     el('reportDenomMatch').textContent = "";
     el('denomModal').classList.remove('hidden');
-  });
+  } else {
+    // ✅ Past date → load saved denominations or fallback
+    const saved = await idbGet("denoms", date);
+    if (saved) {
+      await exportPDF(date, saved);
+    } else {
+      await exportSimplePDF(date);
+    }
+  }
+});
 
   // --- Simple PDF export (no denomination) ---
 el('exportSimplePDF').addEventListener('click', async () => {
@@ -336,60 +421,97 @@ el('exportSimplePDF').addEventListener('click', async () => {
 
 
   el('btnExcel').addEventListener('click', async () => {
+  const date = el('reportDate').value || istDateKey();
+
+  if (date === istDateKey()) {
+    // ✅ Today → open denomination modal
     exportMode = "excel";
     el('confirmDenom').textContent = "Generate Excel";
-    const date = el('reportDate').value || istDateKey();
     const { totals } = await getDayData(date);
     el('denomModalBalance').textContent = rupeesForPDF(totals.balance);
     loadDefaultDenoms();
     el('reportDenomMatch').textContent = "";
     el('denomModal').classList.remove('hidden');
-  });
-
-  el('confirmDenom').addEventListener('click', async () => {
-    const denomTotal = updateDenoms();
-    const balance = parseINR(el('denomModalBalance').textContent);
-
-    if (denomTotal !== balance) {
-      el('reportDenomMatch').textContent = `❌ Denomination does not match balance. Still exporting...`;
-      el('reportDenomMatch').className = "text-red-600 mt-1 text-sm";
-      try {
-        const diff = denomTotal - balance;
-        const now = nowIST();
-        const adj = {
-          id: uuid(),
-          dateKey: istDateKey(now),
-          createdAt: now.toISOString(),
-          type: 'adjustment',
-          amount: diff,
-          note: diff > 0 ? 'Excess money detected (denomination mismatch)' : 'Shortage detected (denomination mismatch)',
-          meta: { source: 'denomCheck' }
-        };
-        await idbSet('transactions', adj);
-        if ((el('reportDate').value || istDateKey()) === adj.dateKey) {
-          await loadDayEntries();
-        }
-        await refreshTotals();
-        toast('⚖️ Adjustment recorded');
-      } catch (e) {
-        console.error('Failed to record adjustment', e);
-      }
+  } else {
+    // ✅ Past date → load saved denominations or fallback
+    const saved = await idbGet("denoms", date);
+    if (saved) {
+      await exportExcel(date, saved);
     } else {
-      el('reportDenomMatch').textContent = "✅ Denomination matches balance.";
-      el('reportDenomMatch').className = "text-green-600 mt-1 text-sm";
+      await exportSimplePDF(date);
+    }
+  }
+});
+
+
+el('confirmDenom').addEventListener('click', async () => {
+  const denomTotal = updateDenoms();
+  const balance = parseINR(el('denomModalBalance').textContent);
+
+  if (denomTotal !== balance) {
+    el('reportDenomMatch').textContent = `❌ Denomination does not match balance. Still exporting...`;
+    el('reportDenomMatch').className = "text-red-600 mt-1 text-sm";
+    try {
+      const diff = denomTotal - balance;
+      const now = nowIST();
+      const adj = {
+        id: uuid(),
+        dateKey: istDateKey(now),
+        createdAt: now.toISOString(),
+        type: 'adjustment',
+        amount: diff,
+        note: diff > 0 ? 'Excess money detected (denomination mismatch)' : 'Shortage detected (denomination mismatch)',
+        meta: { source: 'denomCheck' }
+      };
+      await idbSet('transactions', adj);
+      if ((el('reportDate').value || istDateKey()) === adj.dateKey) {
+        await loadDayEntries();
+      }
+      await refreshTotals();
+      toast('⚖️ Adjustment recorded');
+    } catch (e) {
+      console.error('Failed to record adjustment', e);
+    }
+  } else {
+    el('reportDenomMatch').textContent = "✅ Denomination matches balance.";
+    el('reportDenomMatch').className = "text-green-600 mt-1 text-sm";
+  }
+
+  // Always export after check
+  setTimeout(async () => {
+    // 🔥 Save today's denominations into DB AND create savedDenoms object
+    const denoms = {};
+    document.querySelectorAll("#reportDenomTbody tr").forEach(r => {
+      const inp = r.querySelector("input");
+      const v = Number(inp?.dataset?.val || 0);
+      const c = Number(inp?.value || 0);
+      if (c > 0) denoms[v] = c;
+    });
+    
+    const savedDenoms = {
+      dateKey: istDateKey(),
+      values: denoms,
+      total: denomTotal,
+      savedAt: nowIST().toISOString()
+    };
+
+    // Save to database if it's today's date
+    if ((el('reportDate').value || istDateKey()) === istDateKey()) {
+      await idbSet("denoms", savedDenoms);
     }
 
-    // Always export after check
-    setTimeout(async () => {
-      el('denomModal').classList.add('hidden');
-      const date = el('reportDate').value || istDateKey();
-      if (exportMode === "pdf") {
-        await exportPDF(date);
-      } else {
-        await exportExcel(date);
-      }
-    }, 600);
-  });
+    el('denomModal').classList.add('hidden');
+    const date = el('reportDate').value || istDateKey();
+    
+    // 🔥 Pass savedDenoms to both export functions
+    if (exportMode === "pdf") {
+      await exportPDF(date, savedDenoms);
+    } else {
+      await exportExcel(date, savedDenoms);
+    }
+  }, 600);
+});
+
 
   el('cancelDenom').addEventListener('click', () => el('denomModal').classList.add('hidden'));
 
@@ -413,47 +535,59 @@ el('exportSimplePDF').addEventListener('click', async () => {
   }, 60 * 1000); // check every 1 minute
 
 
-  // ✅ Handle correction checkbox (show open adjustments only)
-  el('txCorrection').addEventListener('change', async (e) => {
-    const dropdown = el('txCorrectionAdjust');
-    if (e.target.checked) {
-      await refreshCorrectionDropdown();
-      dropdown.classList.remove('hidden');
-    } else {
-      dropdown.classList.add('hidden');
-      dropdown.innerHTML = '';
-    }
-  });
+// ✅ Handle correction checkbox (show open adjustments only)
+el('txCorrection').addEventListener('change', async (e) => {
+  const dropdown = el('txCorrectionAdjust');
+  if (e.target.checked) {
+    dropdown.innerHTML = ''; // 🔑 clear old entries first
+
+    await refreshCorrectionDropdown();
+
+    // 🔧 Add placeholder so first option can be selected properly
+    const ph = new Option('— Select a correction —', '', true, true);
+    ph.disabled = true;
+    dropdown.insertBefore(ph, dropdown.firstChild);
+    dropdown.value = ''; // make sure nothing is selected yet
+
+    dropdown.classList.remove('hidden');
+  } else {
+    dropdown.classList.add('hidden');
+    dropdown.innerHTML = '';
+  }
+});
+
 })();
 
-  // --- Auto set type + note when correction selected ---
-  el('txCorrectionAdjust').addEventListener('change', (e) => {
-    const selected = e.target.selectedOptions[0];
-    if (!selected) return;
+ // --- Auto set type + note when correction selected ---
+function applyCorrectionFromSelected(selectEl) {
+  const selected = selectEl.selectedOptions[0];
+  if (!selected || !selected.dataset.kind) return;
 
-    const kind = selected.dataset.kind;
-    const amount = selected.dataset.amount;
-    const date = istDisplayDate(selected.dataset.date);
+  const kind = selected.dataset.kind;
+  const amount = selected.dataset.amount;
+  const date = istDisplayDate(selected.dataset.date);
 
-    if (kind === "Shortage") {
-      el('txType').value = "income";    // shortage resolved by adding
-      el('txType').disabled = true;     // lock dropdown
-      el('txNote').value = `Correction: Shortage of ${rupeesForPDF(amount)} from ${date} resolved`;
-    } else if (kind === "Excess") {
-      el('txType').value = "expense";   // excess resolved by subtracting
-      el('txType').disabled = true;
-      el('txNote').value = `Correction: Excess of ${rupeesForPDF(amount)} from ${date} resolved`;
-    }
-  });
+  if (kind === "Shortage") {
+    el('txType').value = "income";
+    el('txType').disabled = true;
+    el('txNote').value = `Correction: Shortage of ${rupeesForPDF(amount)} from ${date} resolved`;
+  } else if (kind === "Excess") {
+    el('txType').value = "expense";
+    el('txType').disabled = true;
+    el('txNote').value = `Correction: Excess of ${rupeesForPDF(amount)} from ${date} resolved`;
+  }
+}
 
-  // When correction box unticked → unlock fields
-  el('txCorrection').addEventListener('change', (e) => {
-    if (!e.target.checked) {
-      el('txType').disabled = false;
-      el('txNote').value = ""; // clear auto note
-    }
-  });
+el('txCorrectionAdjust').addEventListener('change', e => applyCorrectionFromSelected(e.target));
+el('txCorrectionAdjust').addEventListener('click', e => applyCorrectionFromSelected(e.currentTarget));
 
+// ✅ When correction box unticked → unlock fields
+el('txCorrection').addEventListener('change', (e) => {
+  if (!e.target.checked) {
+    el('txType').disabled = false;
+    el('txNote').value = ""; // clear auto note
+  }
+});
 /* ====== Adjustment helpers (open balance) ====== */
 async function getOpenAdjustments() {
   const all = await idbGetAll('transactions');
@@ -490,18 +624,25 @@ async function refreshCorrectionDropdown() {
     dropdown.innerHTML = '<option>No open adjustments</option>';
     return;
   }
-    openList.forEach(a => {
+
+  openList.forEach(a => {
     const opt = document.createElement('option');
     opt.value = a.id;
     const kind = a.openAmount > 0 ? 'Excess' : 'Shortage';
     opt.textContent = `${istDisplayDate(a.dateKey)} → ${kind} ${rupeesForPDF(Math.abs(a.openAmount))}`;
-    opt.dataset.kind = kind;        // NEW → save type (Excess/Shortage)
-    opt.dataset.amount = Math.abs(a.openAmount); // NEW → save amount
-    opt.dataset.date = a.dateKey;   // NEW → save original date
+    opt.dataset.kind   = kind;
+    opt.dataset.amount = Math.abs(a.openAmount);
+    opt.dataset.date   = a.dateKey;
     dropdown.appendChild(opt);
   });
-
 }
+
+// ✅ Suspense balance = all open adjustments not yet resolved
+async function getSuspenseBalance() {
+  const openList = await getOpenAdjustments();
+  return openList.reduce((sum, a) => sum + a.openAmount, 0);
+}
+
 
 /* ====== Entry form ====== */
 function clearForm() {
@@ -540,6 +681,7 @@ if (editingId) {
   await idbSet("edits", {
     id: uuid(),
     transactionId: editingId,
+    txDateKey: oldTx.dateKey,   // 🔥 add this line
     oldValues: { type: oldTx.type, amount: oldTx.amount, note: oldTx.note },
     newValues: { type, amount, note },
     editedAt: now.toISOString()
@@ -666,19 +808,22 @@ async function refreshTotals(forDate) {
   el('totalExpense').textContent = rupeesForPDF(exp);
   el('currentBalance').textContent = rupeesForPDF(balance);
 
-  const adjEl = el('adjustmentCard');
-  if (adjEl) {
-    if (adj > 0) {
-      adjEl.textContent = `+${rupeesForPDF(adj)}`;
-      adjEl.className = "font-bold text-lg text-green-600";
-    } else if (adj < 0) {
-      adjEl.textContent = `-${rupeesForPDF(Math.abs(adj))}`;
-      adjEl.className = "font-bold text-lg text-red-600";
-    } else {
-      adjEl.textContent = rupeesForPDF(0);
-      adjEl.className = "font-bold text-lg text-gray-600";
-    }
+  // 🔥 Show suspense balance (open mismatches carry-forwarded)
+const suspense = await getSuspenseBalance();
+const adjEl = el('adjustmentCard');
+if (adjEl) {
+  if (suspense > 0) {
+    adjEl.textContent = `Excess: ${rupeesForPDF(suspense)}`;
+    adjEl.className = "text-xl font-bold text-green-600";
+  } else if (suspense < 0) {
+    adjEl.textContent = `Shortage: ${rupeesForPDF(Math.abs(suspense))}`;
+    adjEl.className = "text-xl font-bold text-red-600";
+  } else {
+    adjEl.textContent = "No Suspense";
+    adjEl.className = "text-xl font-bold text-gray-600";
   }
+}
+
 }
 
 /* ====== Load Entries (missing earlier — now added) ====== */
@@ -880,7 +1025,7 @@ function updateDenoms() {
 }
 
 /* ====== Export PDF (Corporate Style with dinomination) ====== */
-async function exportPDF(dateKey) {
+async function exportPDF(dateKey, savedDenoms = null) {
   const { list, totals } = await getDayData(dateKey);
   const rows = list;
 
@@ -950,13 +1095,16 @@ async function exportPDF(dateKey) {
   doc.text("Summary", 14, y);
   y += 8;
 
-  const summaryRows = [
-    ["Total Cash Deposit", rupeesForPDF(totals.income)],
-    ["Total Expense", rupeesForPDF(totals.expense)],
-    ["Closing Amount", rupeesForPDF(totals.balance)],
-    ["Excess / Shortage",
-      (totals.adjustment >= 0 ? "+" : "- ") + rupeesForPDF(Math.abs(totals.adjustment))]
-  ];
+ const suspenseBalance = await getSuspenseBalance();
+
+const summaryRows = [
+  ["Total Cash Deposit", rupeesForPDF(totals.income)],
+  ["Total Expense", rupeesForPDF(totals.expense)],
+  ["Closing Amount", rupeesForPDF(totals.balance)],
+  ["Excess / Shortage (Today)", (totals.adjustment >= 0 ? "+" : "- ") + rupeesForPDF(Math.abs(totals.adjustment))],
+  ["Suspense Balance (Unresolved)", rupeesForPDF(suspenseBalance)]
+];
+
 
   doc.autoTable({
     head: [["Category", "Amount"]],
@@ -993,8 +1141,18 @@ async function exportPDF(dateKey) {
   }
 
   // --- Denominations ---
-  const denomRows = [];
-  let denomTotal = 0;
+let denomRows = [];
+let denomTotal = 0;
+
+if (savedDenoms) {
+  // ✅ Use saved denominations (for past dates)
+  Object.entries(savedDenoms.values).forEach(([v, c]) => {
+    const sub = v * c;
+    denomRows.push([`${v}`, c, rupeesForPDF(sub)]);
+    denomTotal += sub;
+  });
+} else {
+  // ✅ Use current modal input (for today)
   document.querySelectorAll("#reportDenomTbody tr").forEach(r => {
     const inp = r.querySelector("input");
     const v = Number(inp?.dataset?.val || 0);
@@ -1005,6 +1163,8 @@ async function exportPDF(dateKey) {
       denomTotal += sub;
     }
   });
+}
+
 
   if (denomRows.length) {
     doc.setFont("helvetica", "bold");
@@ -1241,7 +1401,7 @@ async function exportSimplePDF(dateKey) {
 }
 
 /* ====== Export Excel (Corporate Professional Style) ====== */
-async function exportExcel(dateKey) {
+async function exportExcel(dateKey, savedDenoms = null) {
   const { list, totals } = await getDayData(dateKey);
   const wb = XLSX.utils.book_new();
 
@@ -1300,32 +1460,78 @@ async function exportExcel(dateKey) {
   }
 
   // --- Summary ---
+  const suspenseBalance = await getSuspenseBalance();
   wsData.push(["Summary"]);
   wsData.push(["Total Income", totals.income]);
   wsData.push(["Total Expense", totals.expense]);
   wsData.push(["Adjustment", totals.adjustment]);
   wsData.push(["Closing Balance", totals.balance]);
+  wsData.push(["Suspense Balance (Unresolved)", suspenseBalance]);
   wsData.push([]);
 
   // --- Denominations ---
   wsData.push(["Denominations"]);
   wsData.push(["Denomination", "Count", "Subtotal"]);
+  
   let denomTotalExcel = 0;
-  document.querySelectorAll("#reportDenomTbody tr").forEach(r => {
-    const inp = r.querySelector("input");
-    const v = Number(inp?.dataset?.val || 0);
-    const c = Number(inp?.value || 0);
-    if (c > 0) {
+  
+  if (savedDenoms) {
+    // ✅ Use saved denominations (for past dates)
+    Object.entries(savedDenoms.values).forEach(([v, c]) => {
       const sub = v * c;
       denomTotalExcel += sub;
       wsData.push([v, c, sub]);
-    }
-  });
+    });
+  } else {
+    // ✅ Use current modal input (for today)
+    document.querySelectorAll("#reportDenomTbody tr").forEach(r => {
+      const inp = r.querySelector("input");
+      const v = Number(inp?.dataset?.val || 0);
+      const c = Number(inp?.value || 0);
+      if (c > 0) {
+        const sub = v * c;
+        denomTotalExcel += sub;
+        wsData.push([v, c, sub]);
+      }
+    });
+  }
+  
   wsData.push(["Total", "", denomTotalExcel]);
+  wsData.push([]);
+
+  // --- Denomination Match Status ---
+  const balanceStr = el('denomModalBalance').textContent || "0";
+  const balance = parseINR(balanceStr);
+  const diff = denomTotalExcel - balance;
+
+  if (diff === 0) {
+    wsData.push(["✅ Denomination matched with balance."]);
+  } else if (diff > 0) {
+    wsData.push([`⚠️ Denomination shows EXCESS of Rs${diff.toLocaleString('en-IN')}`]);
+  } else {
+    wsData.push([`⚠️ Denomination shows SHORTAGE of Rs${Math.abs(diff).toLocaleString('en-IN')}`]);
+  }
+  wsData.push([]);
+
+  // --- Edits Section ---
+  const allEdits = await idbGetAll("edits");
+  const dayEdits = allEdits.filter(e => e.txDateKey === dateKey);
+
+  if (dayEdits.length) {
+    wsData.push(["Edits"]);
+    wsData.push(["Time", "Old Entry", "New Entry"]);
+    dayEdits.forEach(e => {
+      const t = dayjs(e.editedAt).tz(IST_TZ).format("HH:mm");
+      const oldStr = `${e.oldValues.type} Rs${e.oldValues.amount} "${e.oldValues.note || ""}"`;
+      const newStr = `${e.newValues.type} Rs${e.newValues.amount} "${e.newValues.note || ""}"`;
+      wsData.push([t, oldStr, newStr]);
+    });
+    wsData.push([]);
+  }
 
   const ws = XLSX.utils.aoa_to_sheet(wsData);
 
-  // --- Corporate Styling (requires xlsx-style) ---
+  // --- Corporate Styling ---
   ws['!cols'] = [
     { wch: 20 }, // Time / label
     { wch: 18 }, // Amount
@@ -1341,22 +1547,22 @@ async function exportExcel(dateKey) {
 
   // Title style
   setStyle("A1", {
-    font: { bold: true, sz: 16, color: { rgb: "1F497D" } }, // corporate blue
+    font: { bold: true, sz: 16, color: { rgb: "1F497D" } },
     alignment: { horizontal: "center" }
   });
 
   // Find and style section headers
   Object.keys(ws).forEach(addr => {
     const val = ws[addr]?.v;
-    if (["Income Entries", "Expense Entries", "Adjustments", "Summary", "Denominations"].includes(val)) {
+    if (["Income Entries", "Expense Entries", "Adjustments", "Summary", "Denominations", "Edits"].includes(val)) {
       ws[addr].s = {
         font: { bold: true, sz: 13, color: { rgb: "FFFFFF" } },
-        fill: { fgColor: { rgb: "4F81BD" } }, // deep blue header
+        fill: { fgColor: { rgb: "4F81BD" } },
         alignment: { horizontal: "left" }
       };
     }
     // Table headers
-    if (["Time", "Amount", "Note", "Denomination", "Count", "Subtotal"].includes(val)) {
+    if (["Time", "Amount", "Note", "Denomination", "Count", "Subtotal", "Old Entry", "New Entry"].includes(val)) {
       ws[addr].s = {
         font: { bold: true, color: { rgb: "FFFFFF" } },
         fill: { fgColor: { rgb: "1F497D" } },
@@ -1370,7 +1576,7 @@ async function exportExcel(dateKey) {
     if (addr.startsWith("B") || addr.startsWith("C")) {
       if (typeof ws[addr].v === "number") {
         ws[addr].t = "n";
-        ws[addr].z = "₹#,##0"; // INR format
+        ws[addr].z = "₹#,##0";
         ws[addr].s = { alignment: { horizontal: "right" } };
       }
     }
