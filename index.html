@@ -186,22 +186,6 @@
     th { color: #c8d3f2; font-weight:600; }
   </style>
 
-  /* === Dynamic Text Color for Phases === */
-
-/* Morning + Noon (bright background → dark text) */
-#backdrop[data-phase="morning"] ~ *,
-#backdrop[data-phase="noon"] ~ * {
-  --text: #1e293b;   /* dark slate */
-  --muted: #334155;
-}
-
-/* Dawn + Sunset (medium contrast, keep light text) */
-#backdrop[data-phase="dawn"] ~ *,
-#backdrop[data-phase="sunset"] ~ * {
-  --text: #f1f5f9;   /* near-white */
-  --muted: #e2e8f0;
-}
-
 </head>
 
 <body class="h-full font-sans">
@@ -524,4 +508,3 @@
   </script>
 </body>
 </html>
-
