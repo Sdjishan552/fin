@@ -1,4 +1,8 @@
 /* ====== Utilities ====== */
+
+
+
+
 // Safe UUID helper (fallback if crypto.randomUUID is missing)
 const uuid = () => (
   (self.crypto && crypto.randomUUID)
@@ -290,6 +294,174 @@ function numToWords(n) {
   return str.trim();
 }
 
+/* ====== PDF Sharing Functions ====== */
+
+// Check if Web Share API is supported (for phones)
+function isWebShareSupported() {
+  return 'share' in navigator && 'canShare' in navigator;
+}
+
+// Share PDF using phone's native share menu
+async function sharePDFNative(pdfBlob, filename, dateKey) {
+  try {
+    const file = new File([pdfBlob], filename, { type: 'application/pdf' });
+    const title = `Cash Report - ${istDisplayDate(dateKey)}`;
+    
+    // Check if phone can share files
+    if (navigator.canShare({ files: [file] })) {
+      await navigator.share({
+        title: title,
+        text: `Daily Cash Report for ${istDisplayDate(dateKey)}`,
+        files: [file]
+      });
+      toast('📱 PDF shared successfully!');
+      return true;
+    } else {
+      // Fallback: share without file (just text)
+      await navigator.share({
+        title: title,
+        text: `Daily Cash Report for ${istDisplayDate(dateKey)} - PDF generated successfully.`,
+        url: window.location.href
+      });
+      toast('📱 Share link sent (PDF downloaded separately)');
+      return false;
+    }
+  } catch (error) {
+    if (error.name !== 'AbortError') {
+      console.error('Share failed:', error);
+      toast('❌ Share cancelled or failed');
+    }
+    return false;
+  }
+}
+
+// Email PDF via Gmail/default email app
+function emailPDF(pdfBlob, filename, dateKey) {
+  // Create downloadable link
+  const url = URL.createObjectURL(pdfBlob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  
+  // Open email composer
+  const subject = `Cash Report - ${istDisplayDate(dateKey)}`;
+  const body = `Please find attached the daily cash report for ${istDisplayDate(dateKey)}.\n\nGenerated automatically from Simple Accounting App.`;
+  const mailtoLink = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  
+  window.open(mailtoLink);
+  toast('📧 PDF downloaded + Email opened');
+}
+
+// Download PDF to device
+function downloadPDF(pdfBlob, filename) {
+  const url = URL.createObjectURL(pdfBlob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  toast('💾 PDF saved to device');
+}
+
+// Copy shareable message to clipboard
+async function copyShareMessage(dateKey) {
+  const message = `📊 Daily Cash Report for ${istDisplayDate(dateKey)} has been generated successfully!\n\nGenerated using Simple Accounting App 📱`;
+  
+  try {
+    await navigator.clipboard.writeText(message);
+    toast('📋 Message copied! Paste anywhere to share');
+  } catch (error) {
+    console.error('Copy failed:', error);
+    toast('❌ Copy failed. Please share manually');
+  }
+}
+
+// Show sharing options modal
+function showShareModal(pdfBlob, filename, dateKey) {
+  // Create modal HTML
+  const modalHTML = `
+    <div id="shareModal" class="fixed inset-0 bg-black/40 z-[70] flex items-center justify-center p-4">
+      <div class="w-full max-w-sm card p-5">
+        <div class="text-center mb-4">
+          <div class="text-2xl mb-2">✅</div>
+          <h3 class="text-lg font-semibold">PDF Ready!</h3>
+          <p class="text-sm text-slate-600">How would you like to share it?</p>
+        </div>
+        
+        <div class="space-y-3">
+          ${isWebShareSupported() ? `
+          <button id="shareNative" class="w-full btn btn-primary flex items-center justify-center gap-2">
+            📱 Share via Apps
+          </button>
+          ` : ''}
+          
+          <button id="shareEmail" class="w-full btn btn-emerald flex items-center justify-center gap-2">
+            📧 Email PDF
+          </button>
+          
+          <button id="shareDownload" class="w-full btn btn-purple flex items-center justify-center gap-2">
+            💾 Download PDF
+          </button>
+          
+          <button id="shareCopy" class="w-full btn btn-outline flex items-center justify-center gap-2">
+            📋 Copy Share Message
+          </button>
+        </div>
+        
+        <button id="shareCancel" class="w-full btn btn-outline mt-4">
+          Close
+        </button>
+      </div>
+    </div>
+  `;
+  
+  // Add modal to page
+  document.body.insertAdjacentHTML('beforeend', modalHTML);
+  
+  const modal = document.getElementById('shareModal');
+  
+  // Add event listeners
+  document.getElementById('shareCancel')?.addEventListener('click', () => {
+    modal.remove();
+  });
+  
+  document.getElementById('shareNative')?.addEventListener('click', async () => {
+    const shared = await sharePDFNative(pdfBlob, filename, dateKey);
+    if (!shared) {
+      // If native share failed, also download the file
+      downloadPDF(pdfBlob, filename);
+    }
+    modal.remove();
+  });
+  
+  document.getElementById('shareEmail')?.addEventListener('click', () => {
+    emailPDF(pdfBlob, filename, dateKey);
+    modal.remove();
+  });
+  
+  document.getElementById('shareDownload')?.addEventListener('click', () => {
+    downloadPDF(pdfBlob, filename);
+    modal.remove();
+  });
+  
+  document.getElementById('shareCopy')?.addEventListener('click', async () => {
+    await copyShareMessage(dateKey);
+    modal.remove();
+  });
+  
+  // Close on backdrop click
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) {
+      modal.remove();
+    }
+  });
+}
 /* ====== Install PWA ====== */
 let deferredPrompt = null;
 window.addEventListener('beforeinstallprompt', (e) => {
@@ -1520,8 +1692,12 @@ const dayEdits = allEdits.filter(e => e.txDateKey === dateKey);
 
 
 
-  doc.save(`report-${dateKey}.pdf`);
-  toast("📄 Corporate PDF exported.");
+  // 🔥 NEW: Show share modal instead of direct download
+  const filename = `report-${dateKey}.pdf`;
+  const pdfBlob = doc.output('blob');
+  
+  showShareModal(pdfBlob, filename, dateKey);
+  toast("📊 PDF generated successfully!");
 }
 // Export pdf without dinomination
 // Export PDF without denomination
@@ -1673,10 +1849,13 @@ async function exportSimplePDF(dateKey) {
   doc.setTextColor(100);
   doc.text("This is a system generated report (no denomination section).", 105, 290, { align: "center" });
 
-  doc.save(`report-simple-${dateKey}.pdf`);
-  toast("📄 Simple PDF exported (no denomination).");
+  // 🔥 NEW: Show share modal instead of direct download
+  const filename = `report-simple-${dateKey}.pdf`;
+  const pdfBlob = doc.output('blob');
+  
+  showShareModal(pdfBlob, filename, dateKey);
+  toast("📊 Simple PDF generated successfully!");
 }
-
 /* ====== Export Excel (Corporate Professional Style) ====== */
 async function exportExcel(dateKey, savedDenoms = null) {
   const { list, totals } = await getDayData(dateKey);
