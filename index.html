@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
   <title>Simple Accounting (Offline PWA)</title>
   <link rel="manifest" href="manifest.json" />
-  <meta name="theme-color" content="#0b1020" />
+  <meta name="theme-color" content="#a78bfa" />
 
   <!-- Tailwind -->
   <script src="https://cdn.tailwindcss.com"></script>
 
-  <!-- Required libs (IDs depend on app.js) -->
+  <!-- Libs -->
   <script defer src="https://cdn.jsdelivr.net/npm/dayjs@1/dayjs.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/dayjs@1/plugin/utc.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/dayjs@1/plugin/timezone.js"></script>
@@ -19,307 +19,187 @@
   <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
   <style>
-    :root{
-      --glass: rgba(255,255,255,0.10);
-      --glass-strong: rgba(255,255,255,0.14);
-      --glass-border: rgba(255,255,255,0.22);
-      --text: #e9eefb;
-      --muted: #c9d4ee;
-    }
-    html, body { height: 100%; }
+    /* 🌈 Animated pastel nebula background */
     body {
-      margin: 0;
-      color: var(--text);
-      background: #0b1020; /* base night */
+      background: linear-gradient(-45deg, #fce7f3, #ede9fe, #dbeafe, #dcfce7, #fef9c3);
+      background-size: 400% 400%;
+      animation: gradientShift 25s ease infinite;
       overflow-x: hidden;
-      -webkit-tap-highlight-color: transparent;
+    }
+    @keyframes gradientShift {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
     }
 
-    /* ===== Dynamic Sky Backdrop ===== */
-    #backdrop {
-      position: fixed; inset: 0; z-index: 0; pointer-events: none;
-      background: radial-gradient(1200px 800px at 50% 120%,
-                  #0b1020 0%, #0b1020 40%, #0a0f1c 70%, #060a12 100%);
-      transition: background 1200ms ease;
+    /* ✨ Floating soft stars */
+    .stars {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      background: transparent;
+      overflow: hidden;
+      z-index: -1;
+    }
+    .stars span {
+      position: absolute;
+      display: block;
+      width: 4px; height: 4px;
+      background: white;
+      border-radius: 50%;
+      animation: twinkle 5s linear infinite;
+      opacity: 0.7;
+    }
+    @keyframes twinkle {
+      0%,100% { opacity: 0.2; transform: scale(1); }
+      50% { opacity: 1; transform: scale(1.5); }
     }
 
-    /* Layers (we fade them per phase) */
-    .layer { position: absolute; inset: 0; opacity: 0; transition: opacity 1200ms ease; }
-
-    /* Night: stars + constellations */
-    #layer-night { opacity: 1; }
-    .stars { position:absolute; inset:0; }
-    .star {
-      position:absolute; width:2px; height:2px; border-radius:50%;
-      background: #ffffff; opacity:.7; filter: drop-shadow(0 0 4px #a7bfff);
-      animation: twinkle 4s ease-in-out infinite;
-    }
-    @keyframes twinkle { 0%,100%{opacity:.2} 50%{opacity:1} }
-
-    .shooting-star {
-      position:absolute; width:2px; height:90px; transform: rotate(45deg);
-      background: linear-gradient(#fff, transparent);
-      opacity:.0; animation: shoot 5s linear infinite;
-    }
-    @keyframes shoot {
-      0%   { transform: translate(-20vw,-20vh) rotate(45deg); opacity:0; }
-      10%  { opacity: .9; }
-      100% { transform: translate(120vw,120vh) rotate(45deg); opacity:0; }
-    }
-
-    /* Simple constellation hints (SVG lines) */
-    .constellation { position:absolute; inset:0; opacity:.25; }
-
-    /* Dawn/Morning/Evening gradients */
-    #layer-dawn  { background: radial-gradient(1200px 800px at 50% 120%, #1d1b35 0%, #26355a 35%, #3b6a8e 60%, #f0a35a 100%); }
-    #layer-morn  { background: linear-gradient(180deg, #98c8ff 0%, #cfe7ff 60%, #f2f8ff 100%); }
-    #layer-noon  { background: linear-gradient(180deg, #74b6ff 0%, #a3d4ff 55%, #d7eeff 100%); }
-    #layer-eve   { background: radial-gradient(1100px 700px at 50% 120%, #2c1e3d 0%, #3a2a5e 40%, #884b7a 70%, #f08a5d 100%); }
-    #layer-sun   { position:absolute; inset:0; }
-
-    /* Sun + rays (positioned via CSS vars set by JS) */
-    .sun {
-      position:absolute;
-      width:120px; height:120px; border-radius:9999px;
-      left: calc(var(--sun-x, 50) * 1% - 60px);
-      top:  calc(var(--sun-y, 40) * 1% - 60px);
-      background: radial-gradient(circle at 40% 40%, #fff7c4 0%, #ffd36e 45%, #ffae52 60%, #ff9a3c 70%, rgba(255,154,60,0.1) 100%);
-      box-shadow: 0 0 40px 15px rgba(255,214,120,0.35);
-    }
-    .sun::after{
-      content:"";
-      position:absolute; inset:-25px;
-      border-radius:9999px;
-      background: conic-gradient(from 0deg, rgba(255,222,130,.22), rgba(255,222,130,0) 25%);
-      animation: rays 8s linear infinite;
-      filter: blur(2px);
-      mask: radial-gradient(circle at center, transparent 58%, #000 60%);
-    }
-    @keyframes rays { to { transform: rotate(360deg); } }
-
-    /* Clouds */
-    .cloud { position:absolute; top:10%; opacity:.85; filter: blur(.2px); }
-    .cloud svg { width: 200px; height: 120px; fill: rgba(255,255,255,0.9); }
-    .cloud.c1 { left:-30%; animation: cloudMove 60s linear infinite; }
-    .cloud.c2 { left:-50%; top: 25%; transform: scale(1.2); animation: cloudMove 90s linear infinite 5s; opacity:.75; }
-    .cloud.c3 { left:-40%; top: 40%; transform: scale(.9); animation: cloudMove 75s linear infinite 2s; opacity:.65; }
-    @keyframes cloudMove { to { transform: translateX(150vw) scale(var(--s,1)); } }
-
-    /* Birds (SVG group flying) */
-    .birds { position:absolute; inset:0; }
-    .flock {
-      position:absolute; left:-15%; top:20%;
-      width:200px; height:100px; opacity:.9;
-      animation: fly 35s linear infinite;
-    }
-    .flock.delay { animation-delay: 10s; top: 30%; transform: scale(1.1); opacity:.8; }
-    @keyframes fly { to { transform: translateX(130vw); } }
-
-      
-
-
-    /* Fireflies for evening */
-    .firefly {
-      position:absolute; width:4px; height:4px; border-radius:50%;
-      background:#ffd86b; box-shadow:0 0 8px 3px #ffd86b88;
-      opacity:.0; animation: flit 6s ease-in-out infinite;
-    }
-    @keyframes flit {
-      0% { transform: translate(0,0); opacity:0; }
-      15% { opacity:1; }
-      50% { transform: translate(40px,-20px); }
-      85% { opacity:1; }
-      100% { transform: translate(-10px,20px); opacity:0; }
-    }
-
-    /* Phase opacities controlled by data-phase on #backdrop */
-    #backdrop[data-phase="night"]  #layer-night { opacity: 1; }
-    #backdrop[data-phase="dawn"]   #layer-night { opacity: .4; }
-    #backdrop[data-phase="dawn"]   #layer-dawn  { opacity: 1; }
-    #backdrop[data-phase="morning"]#layer-morn  { opacity: 1; }
-    #backdrop[data-phase="noon"]   #layer-noon  { opacity: 1; }
-    #backdrop[data-phase="evening"]#layer-eve   { opacity: 1; }
-    #backdrop[data-phase="sunset"] #layer-eve   { opacity: 1; }
-
-    /* Sun visible in daylight phases */
-    #backdrop[data-phase="morning"] .sun,
-    #backdrop[data-phase="noon"]    .sun,
-    #backdrop[data-phase="evening"] .sun,
-    #backdrop[data-phase="sunset"]  .sun { opacity: 1; }
-    .sun { opacity: 0; transition: opacity 1000ms ease; }
-
-    /* Birds visible morning + evening */
-    #backdrop[data-phase="morning"] .birds,
-    #backdrop[data-phase="evening"] .birds { opacity: 1; }
-    .birds { opacity: 0; transition: opacity 800ms ease; }
-
-    /* Clouds visible day */
-    #backdrop[data-phase="morning"] .clouds,
-    #backdrop[data-phase="noon"] .clouds,
-    #backdrop[data-phase="evening"] .clouds { opacity: .95; }
-    .clouds { opacity: 0; transition: opacity 1000ms ease; }
-
-    /* Fireflies visible at evening */
-    #backdrop[data-phase="evening"] .fireflies,
-    #backdrop[data-phase="sunset"]  .fireflies { opacity: 1; }
-    .fireflies { position:absolute; inset:0; opacity:0; transition: opacity 1000ms ease; }
-
-    /* ===== Glass UI ===== */
+    /* 🌠 Glassmorphic cards */
     .card {
-      background: var(--glass);
-      backdrop-filter: blur(12px);
-      border: 1px solid var(--glass-border);
+      background: rgba(255,255,255,0.6);
+      backdrop-filter: blur(18px);
       border-radius: 1rem;
-      box-shadow: 0 10px 25px rgba(0,0,0,.35);
+      border: 1px solid rgba(255,255,255,0.4);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+    }
+
+    /* ✨ KPI glowing nebula tiles */
+    .kpi {
+      border-radius: 1rem;
       padding: 1rem;
-      margin-bottom: 1rem;
+      text-align: center;
+      color: #1f2937;
+      font-weight: 700;
+      animation: glow 6s ease-in-out infinite;
+      box-shadow: 0 0 30px rgba(255,255,255,0.6);
     }
+    @keyframes glow {
+      0%,100% { transform: scale(1); }
+      50% { transform: scale(1.05); }
+    }
+
+    /* Inputs */
     .input {
-      width:100%; padding:.65rem .9rem; border-radius:.9rem;
-      border:1px solid var(--glass-border); background: rgba(255,255,255,.08);
-      color: var(--text);
+      width: 100%;
+      padding: 0.6rem 0.8rem;
+      border-radius: 0.75rem;
+      border: 1px solid rgba(0,0,0,0.1);
+      background: rgba(255,255,255,0.8);
+      color: #111;
     }
-    .btn { width:100%; padding:.8rem; border-radius:.9rem; font-weight:700; border:none; cursor:pointer; }
-    .btn-primary { background: linear-gradient(90deg,#22d3ee,#818cf8); color:#07121f; }
-    .btn-emerald { background: linear-gradient(90deg,#34d399,#10b981); color:#052015; }
-    .btn-rose    { background: linear-gradient(90deg,#fb7185,#f43f5e); color:#23070c; }
-    .btn-purple  { background: linear-gradient(90deg,#a78bfa,#8b5cf6); color:#120a1f; }
-    .btn-outline { background: transparent; border:1px solid var(--glass-border); color: var(--muted); }
-    table { color: var(--text); }
-    th { color: #c8d3f2; font-weight:600; }
+
+    /* Buttons */
+    .btn {
+      width: 100%;
+      padding: 0.75rem 1rem;
+      border-radius: 0.9rem;
+      font-weight: 600;
+      color: #fff;
+    }
+    .btn-primary { background: linear-gradient(90deg,#6366f1,#a78bfa); }
+    .btn-emerald { background: linear-gradient(90deg,#10b981,#6ee7b7); }
+    .btn-rose { background: linear-gradient(90deg,#f43f5e,#fb7185); }
+    .btn-purple { background: linear-gradient(90deg,#a855f7,#d8b4fe); }
+    .btn-outline {
+      background: rgba(255,255,255,0.5);
+      border: 1px solid rgba(0,0,0,0.1);
+      color: #1f2937;
+    }
   </style>
 </head>
 
-<body class="h-full font-sans">
+<body class="h-full font-sans text-slate-900">
 
-  <!-- ===== Animated Sky Backdrop (behind everything) ===== -->
-  <div id="backdrop" data-phase="night">
-    <!-- Layer: Night -->
-    <div id="layer-night" class="layer">
-      <div id="stars" class="stars"></div>
-      <svg class="constellation" viewBox="0 0 100 100" preserveAspectRatio="none">
-        <polyline points="5,70 20,55 35,65 50,40 65,50 80,30 95,45"
-          stroke="#9ab4ff" stroke-width="0.6" fill="none" stroke-linecap="round" stroke-linejoin="round">
-          <animate attributeName="opacity" values="0.1;0.35;0.1" dur="8s" repeatCount="indefinite"/>
-        </polyline>
-      </svg>
-    </div>
-
-    <!-- Layer: Dawn/Morning/Noon/Evening Gradients -->
-    <div id="layer-dawn" class="layer"></div>
-    <div id="layer-morn" class="layer"></div>
-    <div id="layer-noon" class="layer"></div>
-    <div id="layer-eve"  class="layer"></div>
-
-    <!-- Layer: Sun + Rays -->
-    <div id="layer-sun" class="layer">
-      <div class="sun"></div>
-    </div>
-
-    <!-- Clouds -->
-    <div class="clouds layer">
-      <div class="cloud c1" style="--s:1;">
-        <svg viewBox="0 0 64 32"><path d="M10 24c-5 0-9-4-9-9s4-9 9-9c2 0 4 .7 5.5 2a12 12 0 0 1 23 3c.7-.2 1.5-.3 2.3-.3 5 0 9 4 9 9s-4 9-9 9H10z"/></svg>
-      </div>
-      <div class="cloud c2" style="--s:1.1;">
-        <svg viewBox="0 0 64 32"><path d="M10 24c-5 0-9-4-9-9s4-9 9-9c2 0 4 .7 5.5 2a12 12 0 0 1 23 3c.7-.2 1.5-.3 2.3-.3 5 0 9 4 9 9s-4 9-9 9H10z"/></svg>
-      </div>
-      <div class="cloud c3" style="--s:.95;">
-        <svg viewBox="0 0 64 32"><path d="M10 24c-5 0-9-4-9-9s4-9 9-9c2 0 4 .7 5.5 2a12 12 0 0 1 23 3c.7-.2 1.5-.3 2.3-.3 5 0 9 4 9 9s-4 9-9 9H10z"/></svg>
-      </div>
-    </div>
-
-    <!-- Birds -->
-    <div class="birds layer">
-      <svg class="flock" viewBox="0 0 200 100">
-        <path d="M10,50 q20,-20 40,0 q-20,-15 -40,0" stroke="#1f2937" stroke-width="2" fill="none"/>
-        <path d="M60,40 q20,-20 40,0 q-20,-15 -40,0" stroke="#1f2937" stroke-width="2" fill="none"/>
-        <path d="M110,55 q20,-20 40,0 q-20,-15 -40,0" stroke="#1f2937" stroke-width="2" fill="none"/>
-      </svg>
-      <svg class="flock delay" viewBox="0 0 200 100">
-        <path d="M10,50 q20,-20 40,0 q-20,-15 -40,0" stroke="#1f2937" stroke-width="2" fill="none"/>
-        <path d="M60,40 q20,-20 40,0 q-20,-15 -40,0" stroke="#1f2937" stroke-width="2" fill="none"/>
-        <path d="M110,55 q20,-20 40,0 q-20,-15 -40,0" stroke="#1f2937" stroke-width="2" fill="none"/>
-      </svg>
-    </div>
-
-    <!-- Fireflies (evening) -->
-    <div class="fireflies layer" id="fireflies"></div>
+  <!-- 🌌 Animated star layer -->
+  <div class="stars">
+    <!-- Many random stars -->
+    <span style="top:10%;left:20%;animation-delay:0s;"></span>
+    <span style="top:30%;left:70%;animation-delay:2s;"></span>
+    <span style="top:50%;left:40%;animation-delay:4s;"></span>
+    <span style="top:80%;left:60%;animation-delay:1s;"></span>
+    <span style="top:20%;left:90%;animation-delay:3s;"></span>
   </div>
 
-  <!-- ===== App UI (IDs preserved for app.js) ===== -->
-  <div id="pinOverlay" class="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/60">
-    <div class="card w-full max-w-sm text-center">
+  <!-- 🔒 PIN Lock Overlay -->
+  <div id="pinOverlay" class="fixed inset-0 z-50 flex items-center justify-center p-6">
+    <div class="w-full max-w-sm card p-6 text-center">
       <h1 class="text-3xl font-extrabold mb-2">🔒 Enter PIN</h1>
       <p id="pinSubheading" class="text-sm mb-4">This keeps data private on this device.</p>
+
       <input id="pinInput" type="password" inputmode="numeric" maxlength="4" placeholder="••••"
-             class="input text-center text-2xl tracking-widest mb-3" autocomplete="off" />
+             class="input text-center text-3xl tracking-widest mb-3" autocomplete="off" />
+
       <button id="pinSubmit" class="btn btn-primary">Unlock</button>
       <button id="pinReset" class="btn btn-outline mt-2 text-sm">Forgot PIN? Reset (erases data)</button>
-      <p id="pinError" class="text-rose-300 text-sm mt-3 hidden"></p>
+
+      <p id="pinError" class="text-rose-500 text-sm mt-3 hidden"></p>
     </div>
   </div>
 
-  <div id="app" class="relative z-10 max-w-md mx-auto p-4 pb-24 hidden">
+  <!-- 📱 App Shell -->
+  <div id="app" class="max-w-md mx-auto p-4 pb-24 hidden">
 
     <!-- Header -->
-    <header class="flex items-center justify-between mb-4">
+    <header class="flex items-center justify-between mb-5">
       <div>
-        <h1 class="text-xl font-extrabold">🌌 Simple Accounting</h1>
-        <p id="statusLine" class="text-xs text-slate-200/80">Offline-first • Data stays on this device</p>
+        <h1 class="text-xl font-bold">🌈 Simple Accounting</h1>
+        <p id="statusLine" class="text-xs text-slate-600">Offline-first • Data stays on this device</p>
       </div>
       <div class="flex items-center gap-2">
-        <button id="btnInstall" class="hidden px-3 py-1 rounded-full bg-white/20 text-white text-xs">Install</button>
-        <span id="onlineBadge" class="px-2 py-1 text-xs rounded-full bg-white/20">checking…</span>
+        <button id="btnInstall" class="hidden px-3 py-2 rounded-lg btn-outline text-sm">Install</button>
+        <span id="onlineBadge" class="px-2 py-1 text-xs rounded-full bg-white/60">checking…</span>
       </div>
     </header>
 
-    <!-- KPIs 2×2 -->
-    <section class="grid grid-cols-2 gap-3 mb-5">
-      <div class="card text-center">
-        <div class="text-xs uppercase tracking-wide text-slate-200/70">Opening + Deposit</div>
-        <div id="totalIncome" class="text-2xl font-extrabold mt-1 text-teal-200">₹0</div>
+    <!-- KPIs -->
+    <section class="grid grid-cols-2 gap-3 mb-6">
+      <div class="kpi" style="background:linear-gradient(135deg,#93c5fd,#c4b5fd);">
+        <div class="text-xs">Opening + Deposit</div>
+        <div id="totalIncome" class="text-xl mt-1">₹0</div>
       </div>
-      <div class="card text-center">
-        <div class="text-xs uppercase tracking-wide text-slate-200/70">Expense</div>
-        <div id="totalExpense" class="text-2xl font-extrabold mt-1 text-rose-200">₹0</div>
+      <div class="kpi" style="background:linear-gradient(135deg,#f9a8d4,#fcd34d);">
+        <div class="text-xs">Expense</div>
+        <div id="totalExpense" class="text-xl mt-1">₹0</div>
       </div>
-      <div class="card text-center">
-        <div class="text-xs uppercase tracking-wide text-slate-200/70">Balance</div>
-        <div id="currentBalance" class="text-2xl font-extrabold mt-1 text-sky-200">₹0</div>
+      <div class="kpi" style="background:linear-gradient(135deg,#6ee7b7,#93c5fd);">
+        <div class="text-xs">Balance</div>
+        <div id="currentBalance" class="text-xl mt-1">₹0</div>
       </div>
-      <div class="card text-center">
-        <div class="text-xs uppercase tracking-wide text-slate-200/70">Suspense</div>
-        <div id="adjustmentCard" class="text-2xl font-extrabold mt-1 text-amber-200">₹0</div>
+      <div class="kpi" style="background:linear-gradient(135deg,#fde68a,#f9a8d4);">
+        <div class="text-xs">Suspense</div>
+        <div id="adjustmentCard" class="text-xl mt-1">₹0</div>
       </div>
     </section>
 
     <!-- Add Entry -->
-    <section class="card">
+    <section class="card p-4 mb-5">
       <h2 class="text-lg font-semibold mb-3">➕ Add Entry</h2>
       <div class="grid grid-cols-2 gap-3">
         <div>
-          <label class="text-sm">Type</label>
+          <label for="txType" class="text-sm">Type</label>
           <select id="txType" class="input">
             <option value="income">Income</option>
             <option value="expense">Expense</option>
           </select>
         </div>
         <div>
-          <label class="text-sm">Amount (₹)</label>
-          <input id="txAmount" type="number" min="0" step="1" class="input" placeholder="0" />
-          <span id="amountInWords" class="block text-xs text-slate-200/80 mt-1"></span>
+          <label for="txAmount" class="text-sm">Amount (₹)</label>
+          <input id="txAmount" type="number" min="0" step="1" class="input text-lg" placeholder="0" />
+          <span id="amountInWords" class="block text-xs mt-1 text-slate-500"></span>
         </div>
       </div>
+
       <div class="mt-3">
-        <label class="text-sm">Note</label>
-        <input id="txNote" class="input" placeholder="e.g., Person / Shop rent" />
+        <label for="txNote" class="text-sm">Note</label>
+        <input id="txNote" class="input" placeholder="e.g., Rent / Name" />
         <div class="mt-2 flex items-center gap-2">
           <input id="txCorrection" type="checkbox" class="w-4 h-4" />
-          <label for="txCorrection" class="text-sm">This is a correction of earlier excess/shortage</label>
+          <label for="txCorrection" class="text-sm">Correction</label>
         </div>
         <select id="txCorrectionAdjust" class="input mt-2 hidden"></select>
       </div>
+
       <div class="flex gap-2 pt-3">
         <button id="saveEntry" class="btn btn-emerald flex-1">Save Entry</button>
         <button id="clearForm" class="btn btn-outline">Clear</button>
@@ -327,7 +207,7 @@
     </section>
 
     <!-- Report -->
-    <section class="card">
+    <section class="card p-4 mb-5">
       <h2 class="text-lg font-semibold mb-3">📊 Report</h2>
       <label for="reportDate" class="block text-sm mb-1">Date</label>
       <input id="reportDate" type="date" class="input mb-3" />
@@ -336,19 +216,20 @@
         <button id="btnExcel" class="btn btn-emerald">📊 Export Excel</button>
         <button id="exportSimplePDF" class="btn btn-purple">🧾 PDF (No Denomination)</button>
       </div>
+
       <div class="flex justify-between mt-3">
-        <button id="loadDay" class="px-3 py-2 rounded-xl bg-white/10">Load Entries</button>
-        <span id="mismatchBadge" class="px-2 py-1 text-xs rounded-full bg-white/20">Mismatches: 0</span>
+        <button id="loadDay" class="px-3 py-2 rounded-lg btn-outline">Load Entries</button>
+        <span id="mismatchBadge" class="px-2 py-1 text-xs rounded-full bg-white/60">Mismatches: 0</span>
       </div>
     </section>
 
     <!-- Entries -->
-    <section class="card">
-      <h2 class="text-lg font-semibold mb-3">📋 Today’s Entries</h2>
-      <div class="overflow-auto rounded-lg border border-white/15">
-        <table class="w-full text-sm">
-          <thead class="bg-white/10">
-            <tr class="text-left">
+    <section class="card p-4 mb-5">
+      <h2 class="text-lg font-semibold mb-2">📋 Today’s Entries</h2>
+      <div class="overflow-auto rounded-lg border border-white/40">
+        <table class="w-full text-sm text-slate-700">
+          <thead class="bg-white/40">
+            <tr>
               <th class="py-2 px-2">Time</th>
               <th class="py-2 px-2">Type</th>
               <th class="py-2 px-2">Amount</th>
@@ -356,26 +237,28 @@
               <th class="py-2 px-2 text-center">⚙️</th>
             </tr>
           </thead>
-          <tbody id="listTbody" class="divide-y divide-white/10"></tbody>
+          <tbody id="listTbody" class="divide-y divide-white/40"></tbody>
         </table>
       </div>
     </section>
 
     <!-- Danger Zone -->
-    <section class="card">
-      <h2 class="text-base font-semibold mb-2 text-rose-200">⚠️ Danger Zone</h2>
+    <section class="card p-4">
+      <h2 class="text-base font-semibold mb-2 text-rose-600">⚠️ Danger Zone</h2>
       <button id="wipeAll" class="btn btn-rose">Erase All Data</button>
     </section>
   </div>
 
-  <!-- Denomination Modal (IDs preserved) -->
+  <!-- Denomination Modal -->
   <div id="denomModal" class="fixed inset-0 bg-black/40 z-[60] hidden flex items-center justify-center p-4">
-    <div class="card w-full max-w-sm">
+    <div class="w-full max-w-sm card p-4">
       <h3 class="text-lg font-semibold mb-2 text-center">💵 Cash Denominations</h3>
-      <p class="text-sm text-slate-200/90 text-center mb-3">Balance: <span id="denomModalBalance" class="font-semibold">₹0</span></p>
-      <div class="overflow-auto rounded-xl max-h-72 border border-white/15">
-        <table class="w-full text-sm">
-          <thead class="bg-white/10">
+      <p class="text-sm text-slate-600 text-center mb-3">
+        Balance: <span id="denomModalBalance" class="font-semibold">₹0</span>
+      </p>
+      <div class="overflow-auto rounded-lg border border-white/40 max-h-72">
+        <table class="w-full text-sm text-slate-700">
+          <thead class="bg-white/40">
             <tr>
               <th class="py-2 text-center">Note</th>
               <th class="py-2 text-center">Count</th>
@@ -392,112 +275,12 @@
       <div id="reportDenomMatch" class="mt-1 text-sm text-center"></div>
       <div class="flex gap-2 mt-3">
         <button id="cancelDenom" class="btn btn-outline">Cancel</button>
-        <button id="confirmDenom" class="btn btn-emerald">Generate PDF</button>
+        <button id="confirmDenom" class="btn btn-primary">Generate PDF</button>
       </div>
     </div>
   </div>
 
-  <!-- ===== Time-driven Sky Logic (safe; doesn't touch your app.js) ===== -->
-  <script>
-    // Create stars
-    (function initStars(){
-      const stars = document.getElementById('stars');
-      const total = 150;
-      for (let i=0;i<total;i++){
-        const s = document.createElement('div');
-        s.className = 'star';
-        s.style.top  = Math.random()*100 + 'vh';
-        s.style.left = Math.random()*100 + 'vw';
-        s.style.animationDuration = (2 + Math.random()*4) + 's';
-        s.style.opacity = (0.2 + Math.random()*0.8).toFixed(2);
-        stars.appendChild(s);
-      }
-      // shooting stars occasionally
-      function shoot(){
-        const sh = document.createElement('div');
-        sh.className = 'shooting-star';
-        sh.style.top = (Math.random()*40) + 'vh';
-        sh.style.left= (Math.random()*40) + 'vw';
-        stars.appendChild(sh);
-        setTimeout(()=>sh.remove(), 5000);
-      }
-      setInterval(shoot, 6000 + Math.random()*4000);
-    })();
-
-    // Fireflies creation for evening
-    (function initFireflies(){
-      const wrap = document.getElementById('fireflies');
-      for(let i=0;i<24;i++){
-        const f = document.createElement('div');
-        f.className='firefly';
-        f.style.top = Math.random()*100 + 'vh';
-        f.style.left= Math.random()*100 + 'vw';
-        f.style.animationDelay = (Math.random()*6)+'s';
-        wrap.appendChild(f);
-      }
-    })();
-
-    // Time mapping (local time): transition 10:45 → 19:30
-    const startMins = 10*60 + 45; // 10:45
-    const endMins   = 19*60 + 30; // 19:30
-    const span = endMins - startMins;
-
-    function minutesNow(){
-      const n = new Date();
-      return n.getHours()*60 + n.getMinutes();
-    }
-
-    function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
-
-    function setPhase(){
-      const back = document.getElementById('backdrop');
-      const m = minutesNow();
-      let phase = 'night';
-      let prog = 0;
-
-      if (m < startMins) { phase = 'night'; prog = 0; }
-      else if (m > endMins) { phase = 'night'; prog = 1; }
-      else {
-        if (prog < 0.086) phase = 'dawn';          // ~8.6%
-else if (prog < 0.286) phase = 'morning';  // +20%
-else if (prog < 0.591) phase = 'noon';     // +30.5%
-else if (prog < 0.867) phase = 'evening';  // +27.6%
-else phase = 'sunset';                     // +13.3% until end
-
-      }
-
-      back.setAttribute('data-phase', phase);
-
-      // Move sun in an arc across the sky during day phases
-      const dayProg = clamp(prog, 0, 1);
-      const x = 8 + dayProg * 84; // percent across
-      // Arc: use sine curve for height (higher at mid-day)
-      const yArc = 85 - Math.sin(dayProg * Math.PI) * 55; // 85% near horizon → 30% at peak
-      document.documentElement.style.setProperty('--sun-x', x.toFixed(2));
-      document.documentElement.style.setProperty('--sun-y', yArc.toFixed(2));
-    }
-
-    // Update each minute + on load + on resize (so sun follows screen nicely)
-    setPhase();
-    setInterval(setPhase, 60 * 1000);
-    window.addEventListener('resize', setPhase);
-
-    // Birds speed variation depending on phase (morning faster, evening slower)
-    function tuneBirds(){
-      const back = document.getElementById('backdrop');
-      const phase = back.getAttribute('data-phase');
-      const birds = document.querySelectorAll('.flock');
-      birds.forEach(f=>{
-        if (phase === 'morning') f.style.animationDuration = '28s';
-        else if (phase === 'evening') f.style.animationDuration = '40s';
-        else f.style.animationDuration = '35s';
-      });
-    }
-    setInterval(tuneBirds, 5000);
-    tuneBirds();
-  </script>
-
-  <!-- Your app logic (unchanged) -->
+  <!-- App Logic -->
   <script defer src="app.js"></script>
   <script>
     if ('serviceWorker' in navigator) {
