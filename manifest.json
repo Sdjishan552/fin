@@ -9,17 +9,18 @@
   "scope": "./",
   "icons": [
     {
-      "src": "mylogo.jpg",
+      "src": "l1.png",
       "sizes": "192x192",
       "type": "image/png"
     },
     {
-      "src": "mylogo.jpg",
+      "src": "l1.png",
       "sizes": "512x512",
       "type": "image/png"
     }
   ]
 }
+
 
 
 
