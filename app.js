@@ -17,8 +17,9 @@ const fmtINR = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'IN
 function nowIST() { return dayjs().tz(IST_TZ); }
 function istDateKey(d = nowIST()) { return d.format('YYYY-MM-DD'); }
 function istDisplayDate(dISO) { return dayjs(dISO).tz(IST_TZ).format('DD - MM - YYYY'); }
-function istDisplayTime(dISO) { return dayjs(dISO).tz(IST_TZ).format('hh:mm A'); }
-
+function istDisplayTime(dISO) { 
+  return dayjs(dISO).tz(IST_TZ).format('h:mm A'); 
+}
 function rupees(n) {
   return fmtINR.format(Number(n || 0));
 }
@@ -940,6 +941,12 @@ async function saveEntry() {
       await refreshTotals();
       await loadDayEntries();
       toast("✅ Transaction updated.");
+      // 🔥 REFRESH THE ENTRIES PAGE VIEW IF WE'RE ON THAT PAGE
+if (!el('entriesPage').classList.contains('hidden')) {
+  const selectedDate = el('reportDate').value || istDateKey();
+  const { list } = await getDayData(selectedDate);
+  renderEntriesPage(list);
+}
       return;
     }
 
@@ -959,19 +966,19 @@ async function saveEntry() {
           const reverseSigned = open > 0 ? -reverseAbs : +reverseAbs;
 
           const correction = {
-            id: uuid(),
-            dateKey: selectedDate,
-            createdAt: targetDate.toISOString(),
-            type: "adjustment",
-            amount: reverseSigned,
-            note: note || `Correction via ${type}`,
-            meta: {
-              coveredBy: type,
-              coveredAmount: amount,
-              reversedAdjId: target.id,
-              reversedFrom: target.dateKey
-            }
-          };
+  id: uuid(),
+  dateKey: selectedDate,
+  createdAt: now.toISOString(),  // 🔥 USE 'now' INSTEAD OF 'targetDate'
+  type: "adjustment",
+  amount: reverseSigned,
+  note: note || `Correction via ${type}`,
+  meta: {
+    coveredBy: type,
+    coveredAmount: amount,
+    reversedAdjId: target.id,
+    reversedFrom: target.dateKey
+  }
+};
 
           await idbSet('transactions', correction);
           toast('✅ Correction saved');
@@ -982,7 +989,7 @@ async function saveEntry() {
       const data = {
         id: uuid(),
         dateKey: selectedDate,
-        createdAt: targetDate.toISOString(),
+        createdAt: now.toISOString(),
         type,
         amount,
         note
@@ -1115,24 +1122,35 @@ document.addEventListener("click", async (e) => {
   const target = e.target;
 
   // Delete flow
-  if (target.classList.contains("deleteBtn")) {
-    const id = target.dataset.id;
-    const pwd = prompt("Enter password to delete:");
-    if (pwd !== "@Faruk123") {
-      alert("❌ Incorrect password. Transaction not deleted.");
-      return;
-    }
-    try {
-      await idbDelete("transactions", id);
-      await loadDayEntries();
-      await refreshTotals();
-      toast("🗑️ Transaction deleted.");
-    } catch (err) {
-      console.error("Delete failed:", err);
-      alert("Failed to delete. Check console.");
-    }
+  // Delete flow
+if (target.classList.contains("deleteBtn")) {
+  const id = target.dataset.id;
+  const pwd = prompt("Enter password to delete:");
+  if (pwd !== "@Faruk123") {
+    alert("❌ Incorrect password. Transaction not deleted.");
     return;
   }
+  try {
+    await idbDelete("transactions", id);
+    
+    // 🔥 ADD THESE LINES TO REFRESH BOTH PAGES
+    await loadDayEntries();  // Refresh main page data
+    await refreshTotals();   // Refresh totals
+    
+    // 🔥 REFRESH THE ENTRIES PAGE VIEW IF WE'RE ON THAT PAGE
+    if (!el('entriesPage').classList.contains('hidden')) {
+      const selectedDate = el('reportDate').value || istDateKey();
+      const { list } = await getDayData(selectedDate);
+      renderEntriesPage(list);
+    }
+    
+    toast("🗑️ Transaction deleted.");
+  } catch (err) {
+    console.error("Delete failed:", err);
+    alert("Failed to delete. Check console.");
+  }
+  return;
+}
 
 // Edit flow (prompt-based)
 if (target.classList.contains("editBtn")) {
