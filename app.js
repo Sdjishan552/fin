@@ -369,18 +369,7 @@ function downloadPDF(pdfBlob, filename) {
   toast('💾 PDF saved to device');
 }
 
-// Copy shareable message to clipboard
-async function copyShareMessage(dateKey) {
-  const message = `📊 Daily Cash Report for ${istDisplayDate(dateKey)} has been generated successfully!\n\nGenerated using Simple Accounting App 📱`;
-  
-  try {
-    await navigator.clipboard.writeText(message);
-    toast('📋 Message copied! Paste anywhere to share');
-  } catch (error) {
-    console.error('Copy failed:', error);
-    toast('❌ Copy failed. Please share manually');
-  }
-}
+
 
 // Show sharing options modal
 function showShareModal(pdfBlob, filename, dateKey) {
@@ -401,18 +390,11 @@ function showShareModal(pdfBlob, filename, dateKey) {
           </button>
           ` : ''}
           
-          <button id="shareEmail" class="w-full btn btn-emerald flex items-center justify-center gap-2">
-            📧 Email PDF
-          </button>
-          
           <button id="shareDownload" class="w-full btn btn-purple flex items-center justify-center gap-2">
             💾 Download PDF
           </button>
           
-          <button id="shareCopy" class="w-full btn btn-outline flex items-center justify-center gap-2">
-            📋 Copy Share Message
-          </button>
-        </div>
+          
         
         <button id="shareCancel" class="w-full btn btn-outline mt-4">
           Close
