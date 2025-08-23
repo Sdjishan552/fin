@@ -1481,7 +1481,7 @@ async function exportPDF(dateKey, savedDenoms = null) {
   if (incomes.length) {
     doc.setFont("helvetica", "bold");
     doc.setFontSize(13);
-    doc.text("Income Entries", 14, y);
+    doc.text("Deposit Entries", 14, y);
     y += 8;
 
     doc.autoTable({
@@ -1708,7 +1708,7 @@ async function exportSimplePDF(dateKey) {
   if (incomes.length) {
     doc.setFont("helvetica", "bold");
     doc.setFontSize(13);
-    doc.text("Income Entries", 14, y);
+    doc.text("Deposit Entries", 14, y);
     y += 8;
 
     doc.autoTable({
@@ -1855,7 +1855,7 @@ async function exportExcel(dateKey, savedDenoms = null) {
   // --- Income ---
   const incomes = list.filter(r => r.type === "income");
   if (incomes.length) {
-    wsData.push(["Income Entries"]);
+    wsData.push(["Deposit Entries"]);
     wsData.push(["Time", "Amount", "Note"]);
     incomes.forEach(r => {
       wsData.push([
@@ -1992,7 +1992,7 @@ async function exportExcel(dateKey, savedDenoms = null) {
   // Find and style section headers
   Object.keys(ws).forEach(addr => {
     const val = ws[addr]?.v;
-    if (["Income Entries", "Expense Entries", "Adjustments", "Summary", "Denominations", "Edits"].includes(val)) {
+    if (["Deposit Entries", "Expense Entries", "Adjustments", "Summary", "Denominations", "Edits"].includes(val)) {
       ws[addr].s = {
         font: { bold: true, sz: 13, color: { rgb: "FFFFFF" } },
         fill: { fgColor: { rgb: "4F81BD" } },
@@ -2126,3 +2126,4 @@ function renderEntriesPage(entries) {
     container.appendChild(card);
   });
 }
+
