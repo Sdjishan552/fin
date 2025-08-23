@@ -1913,6 +1913,7 @@ function renderList(entries) {
 }
 
 // Replace your existing renderEntriesPage function with this one
+// Replace your existing renderEntriesPage function with this updated version
 function renderEntriesPage(entries) {
   console.log('renderEntriesPage called with entries:', entries.length);
   
@@ -1937,7 +1938,8 @@ function renderEntriesPage(entries) {
     card.className = "card p-4 mb-3";
     
     const typeIcon = tx.type === "income" ? "💰" : tx.type === "expense" ? "💸" : "⚖️";
-    const typeText = tx.type === "income" ? "Income" : tx.type === "expense" ? "Expense" : "Adjustment";
+    // 🔥 CHANGE: Show "Deposit" instead of "Income"
+    const typeText = tx.type === "income" ? "Deposit" : tx.type === "expense" ? "Expense" : "Adjustment";
     const timeDisplay = tx.meta?.isOpening ? "Opening Balance" : istDisplayTime(tx.createdAt);
     
     card.innerHTML = `
