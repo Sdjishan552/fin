@@ -42,9 +42,223 @@ function toast(msg, ms = 2000) {
   document.body.appendChild(t);
   setTimeout(() => t.remove(), ms);
 }
+
+
+/* ====== Date Management Functions ====== */
+function getDateStatus(dateKey) {
+  const today = istDateKey();
+  const viewDate = dayjs(dateKey);
+  const todayDate = dayjs(today);
+  
+  if (viewDate.isSame(todayDate)) {
+    return 'today';
+  } else if (viewDate.isBefore(todayDate)) {
+    return 'past';
+  } else {
+    return 'future';
+  }
+}
+
+function updateUIForDateStatus(dateKey) {
+  const status = getDateStatus(dateKey);
+  const addEntrySection = document.querySelector('section:has(#saveEntry)');
+  const saveButton = el('saveEntry');
+  
+  // Reset editing state when switching dates
+  if (dateKey !== currentViewingDate) {
+    editingId = null;
+    pastEditingUnlocked = false;
+    clearForm();
+    currentViewingDate = dateKey;
+  }
+  
+  switch(status) {
+    case 'today':
+      // Today: Full editing allowed
+      addEntrySection.style.opacity = '1';
+      addEntrySection.style.pointerEvents = 'auto';
+      saveButton.textContent = 'Save Entry';
+      saveButton.disabled = false;
+      break;
+      
+    case 'past':
+      // Past: Make it clickable but show PIN prompt
+      addEntrySection.style.opacity = pastEditingUnlocked ? '1' : '0.7';
+      addEntrySection.style.pointerEvents = 'auto'; // Always allow clicks
+      saveButton.textContent = pastEditingUnlocked ? 'Save Entry (Past Date)' : '🔒 Click to Enter PIN';
+      saveButton.disabled = false; // Always enabled so it can be clicked
+      break;
+      
+    case 'future':
+      // Future: Completely blocked
+      addEntrySection.style.opacity = '0.4';
+      addEntrySection.style.pointerEvents = 'none';
+      saveButton.textContent = 'Future Dates Not Allowed';
+      saveButton.disabled = true;
+      break;
+  }
+}
+
+/* ====== Handle Past Date Form Clicks ====== */
+function setupPastDateFormHandlers() {
+  const addEntrySection = document.querySelector('section:has(#saveEntry)');
+  const saveButton = el('saveEntry');
+  const typeSelect = el('txType');
+  const amountInput = el('txAmount');
+  const noteInput = el('txNote');
+  
+  // Add click handlers to form elements for past dates
+  const formElements = [saveButton, typeSelect, amountInput, noteInput];
+  
+  formElements.forEach(element => {
+    element.addEventListener('click', async (e) => {
+      const selectedDate = el('reportDate').value || istDateKey();
+      const dateStatus = getDateStatus(selectedDate);
+      
+      if (dateStatus === 'past' && !pastEditingUnlocked) {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        const permitted = await requestPastEditingPermission();
+        if (permitted) {
+          updateUIForDateStatus(selectedDate);
+          // Focus the clicked element after unlocking
+          setTimeout(() => element.focus(), 100);
+        }
+      }
+    });
+    
+    element.addEventListener('focus', async (e) => {
+      const selectedDate = el('reportDate').value || istDateKey();
+      const dateStatus = getDateStatus(selectedDate);
+      
+      if (dateStatus === 'past' && !pastEditingUnlocked) {
+        e.preventDefault();
+        element.blur();
+        
+        const permitted = await requestPastEditingPermission();
+        if (permitted) {
+          updateUIForDateStatus(selectedDate);
+          // Focus the clicked element after unlocking
+          setTimeout(() => element.focus(), 100);
+        }
+      }
+    });
+  });
+}
+async function requestPastEditingPermission() {
+  return new Promise(async (resolve) => {
+    const pin = prompt("🔒 Enter PIN to edit past records:");
+    if (pin === null) {
+      resolve(false);
+      return;
+    }
+    
+    if (!/^\d{4}$/.test(pin)) {
+      alert('PIN must be 4 digits.');
+      resolve(false);
+      return;
+    }
+    
+    try {
+      const saved = await idbGet('settings', 'pinHash');
+      if (!saved?.value) {
+        alert('No PIN set up. Cannot edit past records.');
+        resolve(false);
+        return;
+      }
+      
+      const candSha = await sha256Hex(pin);
+      const candLegacy = legacyPinHash(pin);
+      const savedHash = saved?.value;
+      const savedAlg = saved?.alg;
+      
+      const ok = (savedAlg === 'sha256-hex')
+        ? (candSha === savedHash)
+        : (candSha === savedHash || candLegacy === savedHash);
+        
+      if (ok) {
+        pastEditingUnlocked = true;
+        toast('✅ Past editing unlocked for this session');
+        resolve(true);
+      } else {
+        alert('❌ Incorrect PIN. Cannot edit past records.');
+        resolve(false);
+      }
+    } catch (e) {
+      console.error('PIN verification failed:', e);
+      alert('Error verifying PIN. Try again.');
+      resolve(false);
+    }
+  });
+}
+
+async function recalculateForwardBalances(fromDate) {
+  const userConfirmed = confirm(
+    "⚠️ Editing past records will update balances for the following days as well. Do you want to continue?"
+  );
+  
+  if (!userConfirmed) {
+    return false;
+  }
+  
+  try {
+    const allTransactions = await idbGetAll('transactions');
+    const today = istDateKey();
+    const startDate = dayjs(fromDate);
+    const endDate = dayjs(today);
+    
+    // Get all dates from the edited date to today
+    const datesToUpdate = [];
+    let currentDate = startDate;
+    while (currentDate.isSameOrBefore(endDate)) {
+      datesToUpdate.push(currentDate.format('YYYY-MM-DD'));
+      currentDate = currentDate.add(1, 'day');
+    }
+    
+    // For each date after the edited one, update opening balance
+    for (let i = 1; i < datesToUpdate.length; i++) {
+      const prevDate = datesToUpdate[i - 1];
+      const currentDate = datesToUpdate[i];
+      
+      // Calculate previous day's closing balance
+      const prevDayTxns = allTransactions.filter(t => t.dateKey === prevDate);
+      const prevClosing = prevDayTxns.reduce((sum, t) => {
+        if (t.type === 'income') return sum + t.amount;
+        if (t.type === 'expense') return sum - t.amount;
+        if (t.type === 'adjustment') return sum + t.amount;
+        return sum;
+      }, 0);
+      
+      // Find current day's opening balance entry
+      const currentDayTxns = allTransactions.filter(t => t.dateKey === currentDate);
+      const openingEntry = currentDayTxns.find(t => t.meta?.isOpening);
+      
+      if (openingEntry && openingEntry.amount !== prevClosing) {
+        // Update opening balance
+        openingEntry.amount = prevClosing;
+        await idbSet('transactions', openingEntry);
+        
+        // Add to allTransactions array for next iteration
+        const index = allTransactions.findIndex(t => t.id === openingEntry.id);
+        if (index !== -1) {
+          allTransactions[index] = openingEntry;
+        }
+      }
+    }
+    
+    toast('📊 Balances recalculated successfully');
+    return true;
+  } catch (error) {
+    console.error('Failed to recalculate balances:', error);
+    alert('Failed to recalculate balances. Please check manually.');
+    return false;
+  }
+}
 // --- Global state for editing ---
 let editingId = null;
-
+let pastEditingUnlocked = false; // Track if past editing is unlocked for current session
+let currentViewingDate = istDateKey(); // Track which date we're currently viewing
 
 /* ====== Amount in words ====== */
 function numToWords(n) {
@@ -380,11 +594,18 @@ newPinReset.addEventListener('click', async () => {
     await idbClear("edits");   // 🔥 clear all edits too
     await refreshTotals();
     await loadDayEntries();
+    await showPinLock();
+    await refreshTotals();
+    await ensureTodayOpeningBalance();
+    await loadDayEntries();
+  setupPastDateFormHandlers(); // <-- ADD THIS LINE HERE
     toast("🗑️ All accounting data erased.");
   });
 
-  el('reportDate').addEventListener('change', loadDayEntries);
-
+el('reportDate').addEventListener('change', () => {
+  pastEditingUnlocked = false; // Reset permission when date changes
+  loadDayEntries();
+});
 
   
   el('loadDay').addEventListener('click', loadDayEntries);
@@ -661,6 +882,26 @@ function clearForm() {
 
 async function saveEntry() {
   try {
+    const selectedDate = el('reportDate').value || istDateKey();
+    const dateStatus = getDateStatus(selectedDate);
+    
+    // Check permissions based on date
+    if (dateStatus === 'future') {
+      alert('❌ Cannot add entries for future dates.');
+      return;
+    }
+    
+    if (dateStatus === 'past' && !pastEditingUnlocked) {
+      const permitted = await requestPastEditingPermission();
+      if (!permitted) {
+        return;
+      }
+      updateUIForDateStatus(selectedDate);
+      return; // Exit here, let user click again after PIN is entered
+    }
+    
+    // ... rest of the saveEntry function stays the same
+    
     const type = el('txType').value;
     const note = el('txNote').value.trim();
     const amount = Number(el('txAmount').value || 0);
@@ -672,54 +913,63 @@ async function saveEntry() {
     const now = nowIST();
 
     // --- If editing existing entry ---
-if (editingId) {
-  const oldTx = await idbGet("transactions", editingId);
-  const newTx = { ...oldTx, type, amount, note };
-  await idbSet("transactions", newTx);
+    if (editingId) {
+      const oldTx = await idbGet("transactions", editingId);
+      const newTx = { ...oldTx, type, amount, note };
+      await idbSet("transactions", newTx);
 
-  // Log edit
-  await idbSet("edits", {
-    id: uuid(),
-    transactionId: editingId,
-    txDateKey: oldTx.dateKey,   // 🔥 add this line
-    oldValues: { type: oldTx.type, amount: oldTx.amount, note: oldTx.note },
-    newValues: { type, amount, note },
-    editedAt: now.toISOString()
-  });
+      // Log edit
+      await idbSet("edits", {
+        id: uuid(),
+        transactionId: editingId,
+        txDateKey: oldTx.dateKey,
+        oldValues: { type: oldTx.type, amount: oldTx.amount, note: oldTx.note },
+        newValues: { type, amount, note },
+        editedAt: now.toISOString()
+      });
 
-  editingId = null;
-  clearForm();
-  await refreshTotals();
-  await loadDayEntries();
-  toast("✅ Transaction updated.");
-  return; // stop here
-}
+      editingId = null;
+      clearForm();
+      
+      // Recalculate if past date
+      if (dateStatus === 'past') {
+        const recalculated = await recalculateForwardBalances(selectedDate);
+        if (!recalculated) return;
+      }
+      
+      await refreshTotals();
+      await loadDayEntries();
+      toast("✅ Transaction updated.");
+      return;
+    }
 
-
+    // Create transaction for the selected date (not always today)
+    const targetDate = dayjs(selectedDate).tz(IST_TZ);
+    
     if (el('txCorrection').checked) {
-      // --- Correction flow: create ONLY the adjustment reversal entry
+      // --- Correction flow
       const chosenId = el('txCorrectionAdjust').value;
       if (chosenId) {
         const openList = await getOpenAdjustments();
         const target = openList.find(a => a.id === chosenId);
 
         if (target) {
-          const open = target.openAmount; // may be + (excess) or - (shortage)
+          const open = target.openAmount;
           const reverseAbs = Math.min(Math.abs(open), amount);
-          const reverseSigned = open > 0 ? -reverseAbs : +reverseAbs; // cancel the open
+          const reverseSigned = open > 0 ? -reverseAbs : +reverseAbs;
 
           const correction = {
             id: uuid(),
-            dateKey: istDateKey(now),
-            createdAt: now.toISOString(),
+            dateKey: selectedDate,
+            createdAt: targetDate.toISOString(),
             type: "adjustment",
             amount: reverseSigned,
             note: note || `Correction via ${type}`,
             meta: {
-              coveredBy: type,               // "income" or "expense"
-              coveredAmount: amount,         // what user typed
-              reversedAdjId: target.id,      // which original we’re covering
-              reversedFrom: target.dateKey   // original date
+              coveredBy: type,
+              coveredAmount: amount,
+              reversedAdjId: target.id,
+              reversedFrom: target.dateKey
             }
           };
 
@@ -731,8 +981,8 @@ if (editingId) {
       // --- Normal income / expense entry
       const data = {
         id: uuid(),
-        dateKey: istDateKey(now),
-        createdAt: now.toISOString(),
+        dateKey: selectedDate,
+        createdAt: targetDate.toISOString(),
         type,
         amount,
         note
@@ -741,12 +991,18 @@ if (editingId) {
       toast('✅ Entry saved');
     }
 
-    // Reset form & refresh UI (instant)
+    // Reset form & refresh UI
     clearForm();
+    
+    // Recalculate if past date
+    if (dateStatus === 'past') {
+      const recalculated = await recalculateForwardBalances(selectedDate);
+      if (!recalculated) return;
+    }
+    
     await refreshTotals();
     await loadDayEntries();
 
-    // If the correction box is open again, repopulate with fresh open balances
     if (el('txCorrection').checked) {
       await refreshCorrectionDropdown();
     }
@@ -755,7 +1011,6 @@ if (editingId) {
     alert('Save failed. Please try again.');
   }
 }
-
 /* ====== Totals ====== */
 async function ensureTodayOpeningBalance() {
   const today = istDateKey();
@@ -829,6 +1084,11 @@ if (adjEl) {
 /* ====== Load Entries (missing earlier — now added) ====== */
 async function loadDayEntries() {
   const date = el('reportDate').value || istDateKey();
+  currentViewingDate = date;
+  
+  // Update UI permissions based on date
+  updateUIForDateStatus(date);
+  
   const { list } = await getDayData(date);
   renderList(list);
   await refreshTotals(date);
@@ -842,26 +1102,12 @@ async function loadDayEntries() {
   }
 }
 
-/* ====== Render List ====== */
+
 function renderList(entries) {
-  const tbody = el("listTbody");
-  tbody.innerHTML = "";
-  entries.forEach(tx => {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td class="py-1">${tx.meta?.isOpening ? "--" : istDisplayTime(tx.createdAt)}</td>
-      <td class="py-1">
-        ${tx.type === "income" ? "💰 Income" : tx.type === "expense" ? "💸 Expense" : "⚖️ Adjustment"}
-      </td>
-      <td class="py-1">${rupeesForPDF(tx.amount)}</td>
-      <td class="py-1">${tx.note || ""}</td>
-      <td class="py-1 text-center">
-        <button class="editBtn px-2 py-1 bg-blue-500 text-white rounded-md text-xs mr-1" data-id="${tx.id}">✏️</button>
-        <button class="deleteBtn px-2 py-1 bg-red-500 text-white rounded-md text-xs" data-id="${tx.id}">🗑️</button>
-      </td>
-    `;
-    tbody.appendChild(tr);
-  });
+  // This function is called by loadDayEntries but was missing
+  // Since we're using the separate entries page, we can keep this minimal
+  const count = entries.length;
+  console.log(`Loaded ${count} entries for display`);
 }
 
 // === Handle Edit / Delete button clicks (single listener) ===
@@ -888,32 +1134,43 @@ document.addEventListener("click", async (e) => {
     return;
   }
 
-  // Edit flow (prompt-based)
-  if (target.classList.contains("editBtn")) {
-    const id = target.dataset.id;
-    const tx = await idbGet("transactions", id);
-    if (!tx) {
-      alert("Transaction not found.");
-      return;
-    }
+// Edit flow (prompt-based)
+if (target.classList.contains("editBtn")) {
+  const id = target.dataset.id;
+  const tx = await idbGet("transactions", id);
+  if (!tx) {
+    alert("Transaction not found.");
+    return;
+  }
 
-    // Disallow editing for opening balance / adjustments / corrections
-    if (tx.meta?.isOpening) {
-      alert("Opening balance cannot be edited.");
-      return;
-    }
-    if (tx.type !== "income" && tx.type !== "expense") {
-      alert("Only income/expense entries can be edited. Adjustments/corrections are not editable.");
-      return;
-    }
+  // Disallow editing for opening balance / adjustments / corrections
+  if (tx.meta?.isOpening) {
+    alert("Opening balance cannot be edited.");
+    return;
+  }
+  if (tx.type !== "income" && tx.type !== "expense") {
+    alert("Only income/expense entries can be edited. Adjustments/corrections are not editable.");
+    return;
+  }
 
-    // Only allow editing of today's entries
-    const today = istDateKey();
-    const txDate = dayjs(tx.createdAt).tz(IST_TZ).format("YYYY-MM-DD");
-    if (today !== txDate) {
-      alert("You can only edit today's entries.");
+  const txDate = tx.dateKey;
+  const dateStatus = getDateStatus(txDate);
+  
+  // Check permissions based on date
+  if (dateStatus === 'future') {
+    alert("Cannot edit future entries.");
+    return;
+  }
+  
+  if (dateStatus === 'past' && !pastEditingUnlocked) {
+    const permitted = await requestPastEditingPermission();
+    if (!permitted) {
       return;
     }
+    updateUIForDateStatus(currentViewingDate);
+  }
+
+
 
     // Prompts: get new amount and note (if canceled, do nothing)
     const newAmountStr = prompt("Enter new amount (₹):", tx.amount);
@@ -943,9 +1200,11 @@ await idbSet("edits", {
 });
 
 
-      await loadDayEntries();
-      await refreshTotals();
-      toast("✅ Transaction updated.");
+await loadDayEntries();
+await refreshTotals();
+toast("✅ Transaction updated.");await loadDayEntries();
+await refreshTotals();
+toast("✅ Transaction updated.");
     } catch (err) {
       console.error("Edit failed:", err);
       alert("Failed to update transaction. See console.");
@@ -1592,4 +1851,97 @@ async function exportExcel(dateKey, savedDenoms = null) {
   XLSX.utils.book_append_sheet(wb, ws, "Report");
   XLSX.writeFile(wb, `report-${dateKey}.xlsx`);
   toast("📊 Professional Excel exported.");
+}
+// Toggle entries visibility
+
+// Page navigation
+let currentEntries = [];
+
+// View Entries Page
+el('viewEntriesBtn').addEventListener('click', async () => {
+  const selectedDate = el('reportDate').value || istDateKey();
+  const { list } = await getDayData(selectedDate);
+  currentEntries = list;
+  
+  // Update page title with date
+  el('entriesPageDate').textContent = `Date: ${istDisplayDate(selectedDate)}`;
+  
+  // Render entries on the separate page
+  renderEntriesPage(list);
+  
+  // Show entries page with animation
+  el('app').classList.add('page-slide-out');
+  setTimeout(() => {
+    el('app').classList.add('hidden');
+    el('entriesPage').classList.remove('hidden');
+    el('entriesPage').classList.add('page-slide-in');
+  }, 300);
+});
+
+// Back to main page
+el('backToMain').addEventListener('click', () => {
+  el('entriesPage').classList.add('page-slide-out');
+  setTimeout(() => {
+    el('entriesPage').classList.add('hidden');
+    el('entriesPage').classList.remove('page-slide-in', 'page-slide-out');
+    el('app').classList.remove('hidden', 'page-slide-out');
+    el('app').classList.add('page-slide-in');
+  }, 300);
+});
+
+// Add this function
+function renderList(entries) {
+  console.log(`Loaded ${entries.length} entries for display`);
+}
+
+// Replace your existing renderEntriesPage function with this one
+function renderEntriesPage(entries) {
+  console.log('renderEntriesPage called with entries:', entries.length);
+  
+  const container = el("entriesPageContainer");
+  if (!container) {
+    console.error('entriesPageContainer not found!');
+    return;
+  }
+  
+  container.innerHTML = "";
+  
+  if (entries.length === 0) {
+    container.innerHTML = '<div class="card p-6 text-center"><p class="text-slate-500">No entries for this date</p></div>';
+    console.log('No entries to display');
+    return;
+  }
+  
+  console.log('Rendering', entries.length, 'entries');
+  
+  entries.forEach((tx, index) => {
+    const card = document.createElement("div");
+    card.className = "card p-4 mb-3";
+    
+    const typeIcon = tx.type === "income" ? "💰" : tx.type === "expense" ? "💸" : "⚖️";
+    const typeText = tx.type === "income" ? "Income" : tx.type === "expense" ? "Expense" : "Adjustment";
+    const timeDisplay = tx.meta?.isOpening ? "Opening Balance" : istDisplayTime(tx.createdAt);
+    
+    card.innerHTML = `
+      <div class="flex justify-between items-start mb-3">
+        <div class="flex items-center gap-3">
+          <span class="text-2xl">${typeIcon}</span>
+          <div>
+            <div class="font-semibold text-lg">${typeText}</div>
+            <div class="text-sm text-slate-600">${timeDisplay}</div>
+          </div>
+        </div>
+        <div class="text-right">
+          <div class="font-bold text-xl text-slate-800">${rupeesForPDF(tx.amount)}</div>
+          <div class="flex gap-2 mt-2">
+            <button class="editBtn px-3 py-1.5 bg-blue-500 text-white rounded-lg text-sm hover:bg-blue-600 transition-colors" data-id="${tx.id}">✏️ Edit</button>
+            <button class="deleteBtn px-3 py-1.5 bg-red-500 text-white rounded-lg text-sm hover:bg-red-600 transition-colors" data-id="${tx.id}">🗑️ Delete</button>
+          </div>
+        </div>
+      </div>
+      ${tx.note ? `<div class="text-sm text-slate-700 bg-white/40 rounded-lg px-3 py-2 mt-3 border border-white/50">💬 "${tx.note}"</div>` : ''}
+    `;
+    
+    container.appendChild(card);
+  });
 }
