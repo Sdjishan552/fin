@@ -1,6 +1,6 @@
 {
-  "name": "Simple Accounting (Offline)",
-  "short_name": "Accounting",
+  "name": "Balancio",
+  "short_name": "Balancio",
   "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#ffffff",
@@ -20,6 +20,7 @@
     }
   ]
 }
+
 
 
 
